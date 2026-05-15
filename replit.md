@@ -88,6 +88,32 @@ Multi-role event and venue management system built with Flutter (web). State is 
 - 4–5 documents per venue owner covering all DocumentType variants
 - 16 attendee registrations across 4 attendees (Laura, Nathan, Chloe, Ravi) for 7 events; some marked attended for past events
 
+### Attendee Module (New)
+- `lib/screens/dashboards/tabs/attendee_tickets_tab.dart` — "My Tickets" tab: ticket-style cards with gradient header, QR placeholder, check-in status, days-until countdown, dashed perforated divider
+- `lib/screens/dashboards/tabs/attendee_wishlist_tab.dart` — "Saved Events" tab: bookmarked events with one-tap register/remove, category accent strip
+- `lib/screens/dashboards/tabs/attendee_notifications_tab.dart` — Alert notifications with indigo theme, unread badge, mark-all-read
+- `lib/screens/dashboards/tabs/attendee_analytics_tab.dart` — Personal analytics: Firebase RTDB live activity log, donut registration rate, category pie + bar charts, organizer leaderboard, 6-month timeline bar chart
+- `lib/services/wishlist_service.dart` — In-memory per-user saved events set (toggle/save/remove/count)
+- `lib/services/firebase_analytics_service.dart` — Firebase Analytics + RTDB dual-write wrapper: logScreenView, logEventRegistration, logEventView, logSearch, logSaveEvent, logShareEvent, logTabView
+
+### Attendee Dashboard — 7 Tabs (Updated)
+0. **Events** — indigo gradient welcome banner, hero stats, Recommendations carousel (based on registered categories), My Schedule (top 3), Upcoming carousel, full search+filter with bookmark save button on each card
+1. **Tickets** — ticket-style cards with category-coloured gradient strip, QR placeholder, check-in badge, days-until countdown
+2. **Saved** — wishlist of bookmarked events, quick register/remove actions
+3. **Calendar** — (existing)
+4. **Map** — (existing)
+5. **Alerts** — notification cards with indigo theme, unread dot indicator
+6. **Analytics** — Firebase live activity log + personal charts
+
+### Theme (Updated — Professional Indigo)
+- Primary: `Color(0xFF4F46E5)` (Indigo 600)
+- Primary Dark: `Color(0xFF3730A3)` (Indigo 800)
+- Primary Light: `Color(0xFFEEF2FF)` (Indigo 50)
+- Background: `Color(0xFFF5F6FF)` (very light indigo wash)
+- Text: `Color(0xFF1E1B4B)` / `Color(0xFF64748B)` / `Color(0xFF94A3B8)`
+- Success: `Color(0xFF059669)`, Warning: `Color(0xFFD97706)`, Error: `Color(0xFFDC2626)`
+- Font: system sans-serif (removed Georgia)
+
 ## Key Dependencies
 - `firebase_database: ^11.3.5` — Firebase Realtime Database (RTDB) with real-time streams
 - `fl_chart: ^0.69.0` — bar, pie, and line charts in all dashboards

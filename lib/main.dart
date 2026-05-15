@@ -33,11 +33,10 @@ class EventApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2D2D2D),
+          seedColor: const Color(0xFF4F46E5),
           brightness: Brightness.light,
         ),
-        scaffoldBackgroundColor: const Color(0xFFFAFAFA),
-        fontFamily: 'Georgia',
+        scaffoldBackgroundColor: const Color(0xFFF5F6FF),
 
         cardTheme: const CardThemeData(
           color: Color(0xFFFFFFFF),
@@ -51,53 +50,53 @@ class EventApp extends StatelessWidget {
 
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(
-              color: Color(0xFFE8E8E8),
-            ),
+            borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
           ),
-
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(
-              color: Color(0xFFE8E8E8),
-            ),
+            borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
           ),
-
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
             borderSide: const BorderSide(
-              color: Color(0xFF2D2D2D),
+              color: Color(0xFF4F46E5),
               width: 1.5,
             ),
           ),
-
-          labelStyle: const TextStyle(
-            color: Color(0xFF6B6B6B),
-          ),
-
-          hintStyle: const TextStyle(
-            color: Color(0xFF9E9E9E),
-          ),
+          labelStyle: const TextStyle(color: Color(0xFF64748B)),
+          hintStyle: const TextStyle(color: Color(0xFF94A3B8)),
         ),
 
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF2D2D2D),
+            backgroundColor: const Color(0xFF4F46E5),
             foregroundColor: Colors.white,
-
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
-
-            padding: const EdgeInsets.symmetric(
-              vertical: 16,
-            ),
-
+            padding: const EdgeInsets.symmetric(vertical: 16),
             textStyle: const TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w600,
-              letterSpacing: 0.5,
+              letterSpacing: 0.3,
             ),
+          ),
+        ),
+
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(
+            foregroundColor: const Color(0xFF4F46E5),
+          ),
+        ),
+
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFFFFFFFF),
+          elevation: 0,
+          iconTheme: IconThemeData(color: Color(0xFF1E1B4B)),
+          titleTextStyle: TextStyle(
+            color: Color(0xFF1E1B4B),
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
           ),
         ),
       ),

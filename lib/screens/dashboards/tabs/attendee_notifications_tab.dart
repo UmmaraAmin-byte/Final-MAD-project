@@ -4,6 +4,15 @@ import '../../../services/notification_service.dart';
 import '../../../models/notification_model.dart';
 import '../../../models/user_model.dart';
 
+const _kPrimary      = Color(0xFF4F46E5);
+const _kPrimaryLight = Color(0xFFEEF2FF);
+const _kTextDark     = Color(0xFF1E1B4B);
+const _kTextMid      = Color(0xFF64748B);
+const _kTextLight    = Color(0xFF94A3B8);
+const _kBorder       = Color(0xFFE2E8F0);
+const _kBg           = Color(0xFFF5F6FF);
+const _kSurface      = Color(0xFFFFFFFF);
+
 class AttendeeNotificationsTab extends StatefulWidget {
   final Set<String> registeredIds;
   final void Function(Map<String, dynamic>) onEventTap;
@@ -19,8 +28,9 @@ class AttendeeNotificationsTab extends StatefulWidget {
       _AttendeeNotificationsTabState();
 }
 
-class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
-  final _auth = AuthService();
+class _AttendeeNotificationsTabState
+    extends State<AttendeeNotificationsTab> {
+  final _auth  = AuthService();
   final _notif = NotificationService();
 
   @override
@@ -33,11 +43,10 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
 
   void _generateNotifications() {
     if (_uid.isEmpty) return;
-    final now = DateTime.now();
+    final now  = DateTime.now();
     final soon = now.add(const Duration(hours: 24));
     final user = _auth.currentUser!;
 
-    // Reminder: registered events starting within 24 hours
     for (final id in widget.registeredIds) {
       final matches = _auth.allEvents.where((e) => e['id'] == id);
       if (matches.isEmpty) continue;
@@ -53,7 +62,7 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
         if (!existing) {
           _notif.addNotification(
             ownerId: _uid,
-            title: 'Upcoming Event Reminder',
+            title:   'Upcoming Event Reminder',
             message:
                 '"${event['title']}" starts at ${_fmtTime(start)} today — don\'t miss it!',
             type: NotificationType.reminder,
@@ -62,17 +71,15 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
       }
     }
 
-    // New events in preferred categories
     final interests = user.interests;
     if (interests.isNotEmpty) {
       final recentCutoff = now.subtract(const Duration(days: 7));
       for (final event in _auth.allEvents) {
         if (event['status'] != 'published') continue;
-        final cat = event['category'] as String? ?? '';
+        final cat     = event['category'] as String? ?? '';
         if (!interests.contains(cat)) continue;
         final created = event['createdAt'] as DateTime?;
         if (created == null || created.isBefore(recentCutoff)) continue;
-
         final existing = _notif.notificationsForOwner(_uid).any(
           (n) =>
               n.type == NotificationType.newEventInCategory &&
@@ -81,7 +88,7 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
         if (!existing) {
           _notif.addNotification(
             ownerId: _uid,
-            title: 'New Event in $cat',
+            title:   'New Event in $cat',
             message:
                 '"${event['title']}" was just added — it matches your interests!',
             type: NotificationType.newEventInCategory,
@@ -99,9 +106,9 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
 
   String _relativeTime(DateTime ts) {
     final diff = DateTime.now().difference(ts);
-    if (diff.inMinutes < 1) return 'Just now';
+    if (diff.inMinutes < 1)  return 'Just now';
     if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    if (diff.inHours < 24)   return '${diff.inHours}h ago';
     return '${diff.inDays}d ago';
   }
 
@@ -125,57 +132,52 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
   Color _typeColor(NotificationType t) {
     switch (t) {
       case NotificationType.reminder:
-        return const Color(0xFF1565C0);
+        return const Color(0xFF2563EB);
       case NotificationType.newEventInCategory:
-        return const Color(0xFF2E7D32);
+        return const Color(0xFF059669);
       case NotificationType.eventRegistered:
-        return const Color(0xFF1A1A1A);
+        return _kPrimary;
       default:
-        return const Color(0xFF6B6B6B);
+        return _kTextMid;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_auth.isLoggedIn) {
-      return _notLoggedIn();
-    }
+    if (!_auth.isLoggedIn) return _notLoggedIn();
 
     final notifications = _notif.notificationsForOwner(_uid);
-    final unread = _notif.unreadCount(_uid);
+    final unread        = _notif.unreadCount(_uid);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Header bar
+        // Header
         Row(
           children: [
             const Icon(Icons.notifications_outlined,
-                color: Color(0xFF1A1A1A), size: 18),
+                color: _kPrimary, size: 18),
             const SizedBox(width: 8),
-            const Text(
-              'Notifications',
-              style: TextStyle(
-                color: Color(0xFF1A1A1A),
-                fontWeight: FontWeight.w700,
-                fontSize: 16,
-              ),
-            ),
+            const Text('Notifications',
+                style: TextStyle(
+                    color: _kTextDark,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16)),
             if (unread > 0) ...[
               const SizedBox(width: 8),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1A1A1A),
+                  color: _kPrimary,
                   borderRadius: BorderRadius.circular(99),
                 ),
                 child: Text(
                   '$unread',
                   style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                  ),
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700),
                 ),
               ),
             ],
@@ -186,14 +188,11 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
                   _notif.markAllRead(_uid);
                   setState(() {});
                 },
-                child: const Text(
-                  'Mark all read',
-                  style: TextStyle(
-                    color: Color(0xFF6B6B6B),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
+                child: const Text('Mark all read',
+                    style: TextStyle(
+                        color: _kPrimary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600)),
               ),
           ],
         ),
@@ -218,12 +217,10 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: n.isRead ? const Color(0xFFFFFFFF) : const Color(0xFFFAFAFA),
-          borderRadius: BorderRadius.circular(12),
+          color: n.isRead ? _kSurface : _kPrimaryLight,
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: n.isRead
-                ? const Color(0xFFE8E8E8)
-                : const Color(0xFF1A1A1A),
+            color: n.isRead ? _kBorder : _kPrimary.withOpacity(0.4),
             width: n.isRead ? 1 : 1.5,
           ),
         ),
@@ -231,10 +228,9 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              width: 36,
-              height: 36,
+              width: 38, height: 38,
               decoration: BoxDecoration(
-                color: color.withOpacity(0.1),
+                color: color.withOpacity(0.12),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Icon(_typeIcon(n.type), size: 18, color: color),
@@ -247,44 +243,34 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
                   Row(
                     children: [
                       Expanded(
-                        child: Text(
-                          n.title,
-                          style: TextStyle(
-                            color: const Color(0xFF1A1A1A),
-                            fontWeight:
-                                n.isRead ? FontWeight.w500 : FontWeight.w700,
-                            fontSize: 13,
-                          ),
-                        ),
+                        child: Text(n.title,
+                            style: TextStyle(
+                                color: _kTextDark,
+                                fontWeight: n.isRead
+                                    ? FontWeight.w500
+                                    : FontWeight.w700,
+                                fontSize: 13)),
                       ),
                       if (!n.isRead)
                         Container(
-                          width: 7,
-                          height: 7,
+                          width: 7, height: 7,
                           decoration: const BoxDecoration(
-                            color: Color(0xFF1A1A1A),
+                            color: _kPrimary,
                             shape: BoxShape.circle,
                           ),
                         ),
                     ],
                   ),
                   const SizedBox(height: 3),
-                  Text(
-                    n.message,
-                    style: const TextStyle(
-                      color: Color(0xFF6B6B6B),
-                      fontSize: 12,
-                      height: 1.4,
-                    ),
-                  ),
+                  Text(n.message,
+                      style: const TextStyle(
+                          color: _kTextMid,
+                          fontSize: 12,
+                          height: 1.4)),
                   const SizedBox(height: 4),
-                  Text(
-                    _relativeTime(n.timestamp),
-                    style: const TextStyle(
-                      color: Color(0xFFB0B0B0),
-                      fontSize: 11,
-                    ),
-                  ),
+                  Text(_relativeTime(n.timestamp),
+                      style: const TextStyle(
+                          color: _kTextLight, fontSize: 11)),
                 ],
               ),
             ),
@@ -298,23 +284,20 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
     return Container(
       padding: const EdgeInsets.all(32),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8F8F8),
+        color: _kPrimaryLight,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE8E8E8)),
+        border: Border.all(color: _kPrimary.withOpacity(0.2)),
       ),
-      child: const Column(
+      child: Column(
         children: [
-          Icon(Icons.notifications_off_outlined,
-              size: 48, color: Color(0xFFCCCCCC)),
-          SizedBox(height: 12),
-          Text(
+          const Icon(Icons.notifications_off_outlined,
+              size: 48, color: _kPrimary),
+          const SizedBox(height: 12),
+          const Text(
             'Sign in to receive personalised notifications about your events and interests.',
             textAlign: TextAlign.center,
             style: TextStyle(
-              color: Color(0xFF9E9E9E),
-              fontSize: 13,
-              height: 1.5,
-            ),
+                color: _kTextMid, fontSize: 13, height: 1.5),
           ),
         ],
       ),
@@ -325,23 +308,20 @@ class _AttendeeNotificationsTabState extends State<AttendeeNotificationsTab> {
     return Container(
       padding: const EdgeInsets.all(32),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8F8F8),
+        color: _kPrimaryLight,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE8E8E8)),
+        border: Border.all(color: _kPrimary.withOpacity(0.15)),
       ),
-      child: const Column(
-        children: [
+      child: Column(
+        children: const [
           Icon(Icons.notifications_none_outlined,
-              size: 48, color: Color(0xFFCCCCCC)),
+              size: 48, color: _kPrimary),
           SizedBox(height: 12),
           Text(
             'You\'re all caught up!\nNo notifications right now.',
             textAlign: TextAlign.center,
             style: TextStyle(
-              color: Color(0xFF9E9E9E),
-              fontSize: 13,
-              height: 1.5,
-            ),
+                color: _kTextMid, fontSize: 13, height: 1.5),
           ),
         ],
       ),

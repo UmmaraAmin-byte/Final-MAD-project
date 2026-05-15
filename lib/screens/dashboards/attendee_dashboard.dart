@@ -1,14 +1,17 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../services/auth_service.dart';
 import '../../services/registration_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/firebase_database_service.dart';
+import '../../services/firebase_analytics_service.dart';
+import '../../services/wishlist_service.dart';
 import '../../models/notification_model.dart';
+import '../../models/user_model.dart';
 import '../profile_screen.dart';
 import '../unified_auth_sheet.dart';
 import '../landing_screen.dart';
-import '../../models/user_model.dart';
 import 'organizer_dashboard.dart';
 import 'staff_dashboard.dart';
 import 'super_admin_dashboard.dart';
@@ -16,30 +19,49 @@ import 'tabs/attendee_calendar_tab.dart';
 import 'tabs/attendee_map_tab.dart';
 import 'tabs/attendee_notifications_tab.dart';
 import 'tabs/attendee_analytics_tab.dart';
+import 'tabs/attendee_tickets_tab.dart';
+import 'tabs/attendee_wishlist_tab.dart';
 import '../../widgets/ai_chatbot_widget.dart';
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
+// ── Theme constants ───────────────────────────────────────────────────────────
+
+const _kPrimary      = Color(0xFF4F46E5);
+const _kPrimaryDark  = Color(0xFF3730A3);
+const _kPrimaryLight = Color(0xFFEEF2FF);
+const _kBg           = Color(0xFFF5F6FF);
+const _kSurface      = Color(0xFFFFFFFF);
+const _kTextDark     = Color(0xFF1E1B4B);
+const _kTextMid      = Color(0xFF64748B);
+const _kTextLight    = Color(0xFF94A3B8);
+const _kBorder       = Color(0xFFE2E8F0);
+const _kSuccess      = Color(0xFF059669);
+const _kSuccessLight = Color(0xFFD1FAE5);
+const _kWarning      = Color(0xFFD97706);
+
+// ── Category colours ─────────────────────────────────────────────────────────
 
 const _categoryColors = <String, Color>{
-  'Technology':     Color(0xFF1565C0),
-  'Business':       Color(0xFF2E7D32),
-  'Arts & Culture': Color(0xFF6A1B9A),
-  'Education':      Color(0xFFE65100),
-  'Workshop':       Color(0xFF00695C),
-  'Seminar':        Color(0xFF4527A0),
-  'Conference':     Color(0xFF283593),
-  'Networking':     Color(0xFF37474F),
-  'Health':         Color(0xFFC62828),
-  'Finance':        Color(0xFF558B2F),
+  'Technology':     Color(0xFF4F46E5),
+  'Business':       Color(0xFF059669),
+  'Arts & Culture': Color(0xFF7C3AED),
+  'Education':      Color(0xFFD97706),
+  'Workshop':       Color(0xFF0891B2),
+  'Seminar':        Color(0xFF7C3AED),
+  'Conference':     Color(0xFF2563EB),
+  'Networking':     Color(0xFF475569),
+  'Health':         Color(0xFFDC2626),
+  'Finance':        Color(0xFF16A34A),
 };
 
 Color _categoryColor(String cat) =>
-    _categoryColors[cat] ?? const Color(0xFF2D2D2D);
+    _categoryColors[cat] ?? _kPrimary;
+
+// ── Time filter ───────────────────────────────────────────────────────────────
 
 enum _TimeFilter { all, today, thisWeek, thisMonth }
 
 const _timeFilterLabels = {
-  _TimeFilter.all:       'All',
+  _TimeFilter.all:       'All Time',
   _TimeFilter.today:     'Today',
   _TimeFilter.thisWeek:  'This Week',
   _TimeFilter.thisMonth: 'This Month',
@@ -56,13 +78,39 @@ class AttendeeDashboard extends StatefulWidget {
 
 class _AttendeeDashboardState extends State<AttendeeDashboard>
     with SingleTickerProviderStateMixin {
-  final _auth = AuthService();
-  final _reg = RegistrationService();
+  final _auth  = AuthService();
+  final _reg   = RegistrationService();
   final _notif = NotificationService();
-  final _fdb = FirebaseDatabaseService();
-  StreamSubscription? _eventsSub;
+  final _fdb   = FirebaseDatabaseService();
+  final _fa    = FirebaseAnalyticsService();
+  final _wish  = WishlistService();
 
+  StreamSubscription? _eventsSub;
   Map<String, dynamic>? _pendingRegistrationEvent;
+
+  // Events tab filters
+  final _searchCtrl  = TextEditingController();
+  String _searchQuery = '';
+  String? _selectedCategory;
+  String? _selectedOrganizerId;
+  _TimeFilter _timeFilter = _TimeFilter.all;
+
+  late final TabController _tabCtrl;
+
+  static const _tabs = [
+    'Events', 'Tickets', 'Saved', 'Calendar', 'Map', 'Alerts', 'Analytics'
+  ];
+  static const _tabIcons = [
+    Icons.event_outlined,
+    Icons.confirmation_num_outlined,
+    Icons.bookmark_outline,
+    Icons.calendar_month_outlined,
+    Icons.map_outlined,
+    Icons.notifications_outlined,
+    Icons.bar_chart_outlined,
+  ];
+
+  // ── Getters ──────────────────────────────────────────────────────────────
 
   Set<String> get _registeredIds {
     if (!_auth.isLoggedIn) return {};
@@ -72,31 +120,31 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
         .toSet();
   }
 
-  // Events tab filters
-  final _searchCtrl = TextEditingController();
-  String _searchQuery = '';
-  String? _selectedCategory;
-  String? _selectedOrganizerId;
-  _TimeFilter _timeFilter = _TimeFilter.all;
+  String get _userId => _auth.currentUser?.id ?? '';
 
-  late final TabController _tabCtrl;
-  static const _tabs = ['Events', 'Calendar', 'Map', 'Alerts', 'Analytics'];
-  static const _tabIcons = [
-    Icons.event_outlined,
-    Icons.calendar_month_outlined,
-    Icons.map_outlined,
-    Icons.notifications_outlined,
-    Icons.bar_chart_outlined,
-  ];
+  // ── Lifecycle ────────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
     _tabCtrl = TabController(length: _tabs.length, vsync: this);
-    _tabCtrl.addListener(() => setState(() {}));
-    _searchCtrl.addListener(() =>
-        setState(() => _searchQuery = _searchCtrl.text.trim().toLowerCase()));
+    _tabCtrl.addListener(_onTabChange);
+    _searchCtrl.addListener(
+        () => setState(() => _searchQuery = _searchCtrl.text.trim().toLowerCase()));
     _subscribeFirebase();
+    // Log screen view
+    _fa.logScreenView('attendee_dashboard',
+        userId: _userId, role: 'attendee');
+    if (_auth.isLoggedIn) {
+      _fa.setUser(_userId, 'attendee');
+    }
+  }
+
+  void _onTabChange() {
+    setState(() {});
+    if (_tabCtrl.indexIsChanging) {
+      _fa.logTabView(_tabs[_tabCtrl.index], _userId);
+    }
   }
 
   void _subscribeFirebase() {
@@ -107,7 +155,9 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
         if (!exists) {
           final out = Map<String, dynamic>.from(ev);
           for (final k in ['start', 'end', 'createdAt']) {
-            if (out[k] is int) out[k] = DateTime.fromMillisecondsSinceEpoch(out[k] as int);
+            if (out[k] is int) {
+              out[k] = DateTime.fromMillisecondsSinceEpoch(out[k] as int);
+            }
           }
           _auth.seedEvents([out]);
         }
@@ -119,12 +169,13 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
   @override
   void dispose() {
     _eventsSub?.cancel();
+    _tabCtrl.removeListener(_onTabChange);
     _tabCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
 
-  // ── Helpers ───────────────────────────────────────────────
+  // ── Data helpers ─────────────────────────────────────────────────────────
 
   String _organizerName(Map<String, dynamic> event) {
     final orgId = event['organizerId'] as String? ?? '';
@@ -155,15 +206,17 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
   }
 
   String _formatDate(DateTime dt) {
-    final months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const months = [
+      'Jan','Feb','Mar','Apr','May','Jun',
+      'Jul','Aug','Sep','Oct','Nov','Dec'
+    ];
     return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
   }
 
-  String _formatTime(DateTime dt) {
-    return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-  }
+  String _formatTime(DateTime dt) =>
+      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 
-  // ── Filtering ─────────────────────────────────────────────
+  // ── Filtering ────────────────────────────────────────────────────────────
 
   List<Map<String, dynamic>> _applyFilters(List<Map<String, dynamic>> events) {
     final now = DateTime.now();
@@ -179,7 +232,8 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
       if (start != null) {
         switch (_timeFilter) {
           case _TimeFilter.today:
-            if (start.day != now.day || start.month != now.month || start.year != now.year) return false;
+            if (start.day != now.day || start.month != now.month ||
+                start.year != now.year) return false;
             break;
           case _TimeFilter.thisWeek:
             final weekEnd = now.add(const Duration(days: 7));
@@ -204,25 +258,43 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
       });
   }
 
-  // ── Double-booking check ──────────────────────────────────
+  List<Map<String, dynamic>> _getRecommendedEvents() {
+    if (!_auth.isLoggedIn || _registeredIds.isEmpty) return [];
+    final myCats = _auth.allEvents
+        .where((e) => _registeredIds.contains(e['id'] as String))
+        .map((e) => e['category'] as String? ?? '')
+        .where((c) => c.isNotEmpty)
+        .toSet();
+    final now = DateTime.now();
+    return _auth.allEvents
+        .where((e) =>
+            e['status'] == 'published' &&
+            !_registeredIds.contains(e['id'] as String) &&
+            myCats.contains(e['category'] as String? ?? '') &&
+            ((e['start'] as DateTime?)?.isAfter(now) ?? false))
+        .take(5)
+        .toList();
+  }
+
+  // ── Conflict check ───────────────────────────────────────────────────────
 
   Map<String, dynamic>? _conflictingEvent(Map<String, dynamic> newEvent) {
     final newStart = newEvent['start'] as DateTime?;
-    final newEnd = newEvent['end'] as DateTime?;
+    final newEnd   = newEvent['end']   as DateTime?;
     if (newStart == null || newEnd == null) return null;
     for (final regId in _registeredIds) {
       final regEvents = _auth.allEvents.where((e) => e['id'] == regId).toList();
       if (regEvents.isEmpty) continue;
       final reg = regEvents.first;
       final regStart = reg['start'] as DateTime?;
-      final regEnd = reg['end'] as DateTime?;
+      final regEnd   = reg['end']   as DateTime?;
       if (regStart == null || regEnd == null) continue;
       if (newStart.isBefore(regEnd) && newEnd.isAfter(regStart)) return reg;
     }
     return null;
   }
 
-  // ── Registration ──────────────────────────────────────────
+  // ── Registration ─────────────────────────────────────────────────────────
 
   Future<void> _toggleRegistration(Map<String, dynamic> event) async {
     if (!_auth.isLoggedIn) {
@@ -242,12 +314,13 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
   }
 
   void _doRegister(Map<String, dynamic> event) {
-    final id = event['id'] as String;
+    final id   = event['id'] as String;
     final user = _auth.currentUser!;
     if (_reg.isRegistered(eventId: id, attendeeId: user.id)) {
       _reg.unregister(eventId: id, attendeeId: user.id);
       setState(() {});
       _showSnack('Unregistered from "${event['title']}".');
+      _fa.logEventUnregistration(id, event['title'] as String? ?? '', user.id);
       return;
     }
     final conflict = _conflictingEvent(event);
@@ -256,32 +329,30 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
       return;
     }
     _reg.register(
-      eventId: id,
-      attendeeId: user.id,
-      attendeeName: user.fullName,
+      eventId:       id,
+      attendeeId:    user.id,
+      attendeeName:  user.fullName,
       attendeeEmail: user.email,
     );
     setState(() {});
     _showSnack('Registered for "${event['title']}"!');
+    _fa.logEventRegistration(id, event['title'] as String? ?? '', user.id, 'attendee');
 
-    // Attendee notification
-    if (_auth.isLoggedIn) {
-      final uid = _auth.currentUser!.id;
-      final start = event['start'] as DateTime?;
-      _notif.addNotification(
-        ownerId: uid,
-        title: 'Registration Confirmed',
-        message: 'You\'re registered for "${event['title']}"'
-            '${start != null ? ' on ${_formatDate(start)} at ${_formatTime(start)}' : ''}.',
-        type: NotificationType.eventRegistered,
-      );
-    }
+    // Notification
+    final start = event['start'] as DateTime?;
+    _notif.addNotification(
+      ownerId: user.id,
+      title:   'Registration Confirmed',
+      message: 'You\'re registered for "${event['title']}"'
+          '${start != null ? ' on ${_formatDate(start)} at ${_formatTime(start)}' : ''}.',
+      type: NotificationType.eventRegistered,
+    );
   }
 
   void _showConflictDialog(
       Map<String, dynamic> newEvent, Map<String, dynamic> existing) {
     final existingStart = existing['start'] as DateTime?;
-    final existingEnd = existing['end'] as DateTime?;
+    final existingEnd   = existing['end']   as DateTime?;
     final timeStr = existingStart != null && existingEnd != null
         ? '${_formatTime(existingStart)} – ${_formatTime(existingEnd)} on ${_formatDate(existingStart)}'
         : '';
@@ -289,20 +360,17 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     showDialog<void>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFFFFFFFF),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        backgroundColor: _kSurface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Row(
           children: [
-            Icon(Icons.warning_amber_rounded, color: Color(0xFF1A1A1A), size: 22),
+            Icon(Icons.warning_amber_rounded, color: _kWarning, size: 22),
             SizedBox(width: 8),
-            Text(
-              'Time Conflict',
-              style: TextStyle(
-                color: Color(0xFF1A1A1A),
-                fontWeight: FontWeight.w700,
-                fontSize: 16,
-              ),
-            ),
+            Text('Schedule Conflict',
+                style: TextStyle(
+                    color: _kTextDark,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16)),
           ],
         ),
         content: Column(
@@ -310,41 +378,36 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'You are already registered for another event at this time. Please select a different event.',
-              style: TextStyle(color: Color(0xFF1A1A1A), height: 1.5),
+              'You already have another event at this time.',
+              style: TextStyle(color: _kTextMid, height: 1.5),
             ),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: const Color(0xFFF5F5F5),
+                color: _kBg,
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFE0E0E0)),
+                border: Border.all(color: _kBorder),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    existing['title'] as String? ?? '',
-                    style: const TextStyle(
-                      color: Color(0xFF1A1A1A),
-                      fontWeight: FontWeight.w600,
-                      fontSize: 13,
-                    ),
-                  ),
+                  Text(existing['title'] as String? ?? '',
+                      style: const TextStyle(
+                          color: _kTextDark,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13)),
                   if (timeStr.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Row(
                       children: [
                         const Icon(Icons.schedule_outlined,
-                            size: 13, color: Color(0xFF6B6B6B)),
+                            size: 13, color: _kTextLight),
                         const SizedBox(width: 4),
                         Expanded(
-                          child: Text(
-                            timeStr,
-                            style: const TextStyle(
-                                color: Color(0xFF6B6B6B), fontSize: 12),
-                          ),
+                          child: Text(timeStr,
+                              style: const TextStyle(
+                                  color: _kTextMid, fontSize: 12)),
                         ),
                       ],
                     ),
@@ -355,13 +418,9 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
           ],
         ),
         actions: [
-          TextButton(
+          ElevatedButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'Got it',
-              style: TextStyle(
-                  color: Color(0xFF2D2D2D), fontWeight: FontWeight.w600),
-            ),
+            child: const Text('Got it'),
           ),
         ],
       ),
@@ -372,142 +431,229 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
-        backgroundColor: const Color(0xFF2D2D2D),
+        backgroundColor: _kPrimary,
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
   }
 
-  // ── Event detail sheet ────────────────────────────────────
+  // ── Event detail sheet ───────────────────────────────────────────────────
 
   void _showEventDetail(Map<String, dynamic> e) {
-    final category = (e['category'] as String? ?? '');
-    final catColor = _categoryColor(category);
-    final start = e['start'] as DateTime?;
-    final end = e['end'] as DateTime?;
-    final location = _locationLabel(e);
-    final organizer = _organizerName(e);
+    final category    = (e['category']    as String? ?? '');
+    final catColor    = _categoryColor(category);
+    final start       = e['start']        as DateTime?;
+    final end         = e['end']          as DateTime?;
+    final location    = _locationLabel(e);
+    final organizer   = _organizerName(e);
     final description = (e['description'] as String? ?? '');
-    final capacity = e['expectedAttendees'] as int? ?? 0;
+    final capacity    = e['expectedAttendees'] as int? ?? 0;
+    final eventId     = e['id']           as String? ?? '';
+
+    _fa.logEventView(eventId, e['title'] as String? ?? '', _userId);
 
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFFFFFFFF),
+      backgroundColor: _kSurface,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (_) => StatefulBuilder(
         builder: (ctx, setS) {
-          final isReg = _registeredIds.contains(e['id'] as String);
+          final isReg     = _registeredIds.contains(eventId);
+          final isSaved   = _auth.isLoggedIn &&
+              _wish.isSaved(_userId, eventId);
+
           return DraggableScrollableSheet(
-            initialChildSize: 0.7,
+            initialChildSize: 0.72,
             minChildSize: 0.5,
             maxChildSize: 0.95,
             expand: false,
             builder: (_, ctrl) => SingleChildScrollView(
               controller: ctrl,
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Center(
-                    child: Container(
-                      width: 44,
-                      height: 5,
-                      margin: const EdgeInsets.only(bottom: 18),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFE8E8E8),
-                        borderRadius: BorderRadius.circular(99),
-                      ),
-                    ),
-                  ),
+                  // Gradient header
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
                     decoration: BoxDecoration(
-                      color: catColor.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      category.isEmpty ? 'Event' : category,
-                      style: TextStyle(
-                          color: catColor,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    e['title'] as String? ?? '',
-                    style: const TextStyle(
-                      color: Color(0xFF1A1A1A),
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      height: 1.2,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  if (start != null)
-                    _detailRow(Icons.schedule_outlined,
-                        '${_formatDate(start)}${end != null ? ', ${_formatTime(start)} – ${_formatTime(end)}' : ''}'),
-                  if (location.isNotEmpty)
-                    _detailRow(Icons.location_on_outlined, location),
-                  if (organizer.isNotEmpty)
-                    _detailRow(Icons.person_outline, 'Organised by $organizer'),
-                  if (capacity > 0)
-                    _detailRow(Icons.people_outline, '$capacity expected attendees'),
-                  const SizedBox(height: 16),
-                  if (description.isNotEmpty) ...[
-                    const Text(
-                      'About this event',
-                      style: TextStyle(
-                        color: Color(0xFF1A1A1A),
-                        fontWeight: FontWeight.w700,
-                        fontSize: 14,
+                      gradient: LinearGradient(
+                        colors: [catColor, catColor.withOpacity(0.6)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
                       ),
+                      borderRadius: const BorderRadius.vertical(
+                          top: Radius.circular(24)),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      description,
-                      style: const TextStyle(
-                        color: Color(0xFF4A4A4A),
-                        height: 1.6,
-                        fontSize: 14,
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                  ],
-                  SizedBox(
-                    width: double.infinity,
-                    height: 50,
-                    child: ElevatedButton(
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        _toggleRegistration(e);
-                        setS(() {});
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: isReg
-                            ? const Color(0xFFF5F5F5)
-                            : const Color(0xFF1A1A1A),
-                        foregroundColor:
-                            isReg ? const Color(0xFF1A1A1A) : Colors.white,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          side: isReg
-                              ? const BorderSide(color: Color(0xFFE0E0E0))
-                              : BorderSide.none,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Drag handle
+                        Center(
+                          child: Container(
+                            width: 44, height: 4,
+                            margin: const EdgeInsets.only(bottom: 16),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.4),
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                          ),
                         ),
-                      ),
-                      child: Text(
-                        isReg
-                            ? 'Unregister from this event'
-                            : 'Register for this event',
-                        style: const TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.w600),
-                      ),
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                category.isEmpty ? 'Event' : category,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                            const Spacer(),
+                            // Save button
+                            if (_auth.isLoggedIn)
+                              GestureDetector(
+                                onTap: () {
+                                  _wish.toggle(_userId, eventId);
+                                  if (!isSaved) {
+                                    _fa.logSaveEvent(
+                                        eventId,
+                                        e['title'] as String? ?? '',
+                                        _userId);
+                                  }
+                                  setS(() {});
+                                  setState(() {});
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Icon(
+                                    isSaved
+                                        ? Icons.bookmark
+                                        : Icons.bookmark_border,
+                                    color: Colors.white,
+                                    size: 18,
+                                  ),
+                                ),
+                              ),
+                            const SizedBox(width: 8),
+                            // Share button
+                            GestureDetector(
+                              onTap: () {
+                                final title = e['title'] as String? ?? '';
+                                final dateStr = start != null
+                                    ? ' on ${_formatDate(start)}'
+                                    : '';
+                                Clipboard.setData(ClipboardData(
+                                    text: '$title$dateStr'));
+                                _showSnack('Event details copied!');
+                                _fa.logShareEvent(
+                                    eventId, title, _userId);
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.2),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Icon(Icons.share_outlined,
+                                    color: Colors.white, size: 18),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          e['title'] as String? ?? '',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            height: 1.2,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Detail body
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (start != null)
+                          _detailRow(Icons.schedule_outlined,
+                              '${_formatDate(start)}${end != null ? ', ${_formatTime(start)} – ${_formatTime(end)}' : ''}'),
+                        if (location.isNotEmpty)
+                          _detailRow(Icons.location_on_outlined, location),
+                        if (organizer.isNotEmpty)
+                          _detailRow(Icons.person_outline,
+                              'Organised by $organizer'),
+                        if (capacity > 0)
+                          _detailRow(Icons.people_outline,
+                              '$capacity expected attendees'),
+                        if (description.isNotEmpty) ...[
+                          const SizedBox(height: 16),
+                          const Text('About this event',
+                              style: TextStyle(
+                                  color: _kTextDark,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14)),
+                          const SizedBox(height: 8),
+                          Text(description,
+                              style: const TextStyle(
+                                  color: _kTextMid,
+                                  height: 1.6,
+                                  fontSize: 14)),
+                        ],
+                        const SizedBox(height: 24),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 52,
+                          child: ElevatedButton(
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              _toggleRegistration(e);
+                              setS(() {});
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor:
+                                  isReg ? const Color(0xFFF1F5F9) : catColor,
+                              foregroundColor:
+                                  isReg ? _kTextDark : Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                side: isReg
+                                    ? const BorderSide(color: _kBorder)
+                                    : BorderSide.none,
+                              ),
+                            ),
+                            child: Text(
+                              isReg
+                                  ? 'Unregister from this event'
+                                  : 'Register for this event',
+                              style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -521,23 +667,22 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
 
   Widget _detailRow(IconData icon, String text) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: 10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: const Color(0xFF6B6B6B), size: 16),
-          const SizedBox(width: 8),
+          Icon(icon, color: _kPrimary, size: 16),
+          const SizedBox(width: 10),
           Expanded(
             child: Text(text,
-                style: const TextStyle(
-                    color: Color(0xFF4A4A4A), fontSize: 13)),
+                style: const TextStyle(color: _kTextMid, fontSize: 13)),
           ),
         ],
       ),
     );
   }
 
-  // ── Navigation ────────────────────────────────────────────
+  // ── Navigation ───────────────────────────────────────────────────────────
 
   void _goToMyDashboard() {
     final u = _auth.currentUser;
@@ -569,140 +714,154 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     final u = _auth.currentUser;
     if (u == null) return;
     if (u.role == UserRole.attendee) {
+      _fa.setUser(u.id, 'attendee');
       setState(() {});
       return;
     }
     _goToMyDashboard();
   }
 
-  // ── Build ─────────────────────────────────────────────────
+  // ── BUILD ────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final unreadCount = _auth.isLoggedIn
         ? _notif.unreadCount(_auth.currentUser!.id)
         : 0;
+    final savedCount = _auth.isLoggedIn
+        ? _wish.countFor(_userId)
+        : 0;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFFAFAFA),
+      backgroundColor: _kBg,
       appBar: _buildAppBar(),
       body: Stack(
         children: [
           Column(
             children: [
-          // ── Tab bar ──────────────────────────────────────
-          Container(
-            color: const Color(0xFFFFFFFF),
-            child: TabBar(
-              controller: _tabCtrl,
-              isScrollable: true,
-              tabAlignment: TabAlignment.start,
-              labelColor: const Color(0xFF1A1A1A),
-              unselectedLabelColor: const Color(0xFF9E9E9E),
-              labelStyle: const TextStyle(
-                fontWeight: FontWeight.w700,
-                fontSize: 12,
-              ),
-              unselectedLabelStyle: const TextStyle(
-                fontWeight: FontWeight.w500,
-                fontSize: 12,
-              ),
-              indicator: const UnderlineTabIndicator(
-                borderSide:
-                    BorderSide(color: Color(0xFF1A1A1A), width: 2.5),
-              ),
-              indicatorSize: TabBarIndicatorSize.label,
-              tabs: List.generate(_tabs.length, (i) {
-                final isNotif = i == 3;
-                return Tab(
-                  height: 44,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(_tabIcons[i], size: 14),
-                      const SizedBox(width: 5),
-                      Text(_tabs[i]),
-                      if (isNotif && unreadCount > 0) ...[
-                        const SizedBox(width: 4),
-                        Container(
-                          width: 16,
-                          height: 16,
-                          decoration: const BoxDecoration(
-                            color: Color(0xFF1A1A1A),
-                            shape: BoxShape.circle,
-                          ),
-                          child: Center(
-                            child: Text(
-                              unreadCount > 9 ? '9+' : '$unreadCount',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 9,
-                                fontWeight: FontWeight.w700,
+              // ── Tab bar ────────────────────────────────
+              Container(
+                color: _kSurface,
+                child: TabBar(
+                  controller: _tabCtrl,
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.start,
+                  labelColor: _kPrimary,
+                  unselectedLabelColor: _kTextLight,
+                  labelStyle: const TextStyle(
+                      fontWeight: FontWeight.w700, fontSize: 12),
+                  unselectedLabelStyle: const TextStyle(
+                      fontWeight: FontWeight.w500, fontSize: 12),
+                  indicator: const UnderlineTabIndicator(
+                    borderSide: BorderSide(color: _kPrimary, width: 2.5),
+                  ),
+                  indicatorSize: TabBarIndicatorSize.label,
+                  tabs: List.generate(_tabs.length, (i) {
+                    final badge = _tabBadge(i, unreadCount, savedCount);
+                    return Tab(
+                      height: 44,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(_tabIcons[i], size: 14),
+                          const SizedBox(width: 5),
+                          Text(_tabs[i]),
+                          if (badge > 0) ...[
+                            const SizedBox(width: 4),
+                            Container(
+                              width: 16, height: 16,
+                              decoration: const BoxDecoration(
+                                  color: _kPrimary, shape: BoxShape.circle),
+                              child: Center(
+                                child: Text(
+                                  badge > 9 ? '9+' : '$badge',
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w700),
+                                ),
                               ),
                             ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                );
-              }),
-            ),
-          ),
-
-          // ── Tab views ─────────────────────────────────────
-          Expanded(
-            child: TabBarView(
-              controller: _tabCtrl,
-              physics: const NeverScrollableScrollPhysics(),
-              children: [
-                // 0 — Events
-                _eventsTab(),
-
-                // 1 — Calendar
-                SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: AttendeeCalendarTab(
-                    registeredIds: _registeredIds,
-                    onToggleRegistration: _toggleRegistration,
-                    onEventTap: _showEventDetail,
-                    locationLabel: _locationLabel,
-                    organizerName: _organizerName,
-                  ),
+                          ],
+                        ],
+                      ),
+                    );
+                  }),
                 ),
+              ),
 
-                // 2 — Map
-                SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: AttendeeMapTab(
-                    registeredIds: _registeredIds,
-                    onToggleRegistration: _toggleRegistration,
-                    onEventTap: _showEventDetail,
-                    locationLabel: _locationLabel,
-                    organizerName: _organizerName,
-                  ),
-                ),
+              // ── Tab views ──────────────────────────────
+              Expanded(
+                child: TabBarView(
+                  controller: _tabCtrl,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    // 0 — Events
+                    _eventsTab(),
 
-                // 3 — Notifications
-                SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: AttendeeNotificationsTab(
-                    registeredIds: _registeredIds,
-                    onEventTap: _showEventDetail,
-                  ),
-                ),
+                    // 1 — Tickets
+                    AttendeeTicketsTab(
+                      registeredIds: _registeredIds,
+                      onEventTap: _showEventDetail,
+                      locationLabel: _locationLabel,
+                      organizerName: _organizerName,
+                    ),
 
-                // 4 — Analytics
-                SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: AttendeeAnalyticsTab(
-                    registeredIds: _registeredIds,
-                  ),
+                    // 2 — Saved
+                    AttendeeWishlistTab(
+                      userId: _userId,
+                      registeredIds: _registeredIds,
+                      onEventTap: _showEventDetail,
+                      onToggleRegistration: _toggleRegistration,
+                      locationLabel: _locationLabel,
+                      organizerName: _organizerName,
+                    ),
+
+                    // 3 — Calendar
+                    SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: AttendeeCalendarTab(
+                        registeredIds: _registeredIds,
+                        onToggleRegistration: _toggleRegistration,
+                        onEventTap: _showEventDetail,
+                        locationLabel: _locationLabel,
+                        organizerName: _organizerName,
+                      ),
+                    ),
+
+                    // 4 — Map
+                    SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: AttendeeMapTab(
+                        registeredIds: _registeredIds,
+                        onToggleRegistration: _toggleRegistration,
+                        onEventTap: _showEventDetail,
+                        locationLabel: _locationLabel,
+                        organizerName: _organizerName,
+                      ),
+                    ),
+
+                    // 5 — Alerts
+                    SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: AttendeeNotificationsTab(
+                        registeredIds: _registeredIds,
+                        onEventTap: _showEventDetail,
+                      ),
+                    ),
+
+                    // 6 — Analytics
+                    SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: AttendeeAnalyticsTab(
+                        registeredIds: _registeredIds,
+                        userId: _userId,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          ),
-        ],
+              ),
+            ],
           ),
           const AiChatbotWidget(),
         ],
@@ -710,19 +869,40 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     );
   }
 
-  // ── AppBar ────────────────────────────────────────────────
+  int _tabBadge(int i, int unread, int saved) {
+    if (i == 5) return unread;   // Alerts
+    if (i == 2) return saved;    // Saved
+    return 0;
+  }
+
+  // ── AppBar ───────────────────────────────────────────────────────────────
 
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
-      backgroundColor: const Color(0xFFFFFFFF),
+      backgroundColor: _kSurface,
       elevation: 0,
-      title: const Text(
-        'EventFlow',
-        style: TextStyle(
-          color: Color(0xFF1A1A1A),
-          fontWeight: FontWeight.w800,
-          fontSize: 18,
-        ),
+      title: Row(
+        children: [
+          Container(
+            width: 32, height: 32,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [_kPrimary, Color(0xFF7C3AED)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(Icons.event_outlined,
+                color: Colors.white, size: 18),
+          ),
+          const SizedBox(width: 10),
+          const Text('EventFlow',
+              style: TextStyle(
+                  color: _kTextDark,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 18)),
+        ],
       ),
       actions: [
         if (!_auth.isLoggedIn) ...[
@@ -736,70 +916,75 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
               if (!ok) return;
               await _handleAuthFromLanding();
             },
-            child: const Text(
-              'Login',
-              style: TextStyle(
-                  color: Color(0xFF1A1A1A), fontWeight: FontWeight.w600),
-            ),
+            child: const Text('Login',
+                style: TextStyle(
+                    color: _kPrimary, fontWeight: FontWeight.w600)),
           ),
-          TextButton(
-            onPressed: () async {
-              final ok = await UnifiedAuthSheet.show(
-                context,
-                intent: AuthIntent.generic,
-                defaultRole: UserRole.attendee,
-              );
-              if (!ok) return;
-              await _handleAuthFromLanding();
-            },
-            child: const Text(
-              'Sign up',
-              style: TextStyle(
-                  color: Color(0xFF1A1A1A), fontWeight: FontWeight.w600),
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: ElevatedButton(
+              onPressed: () async {
+                final ok = await UnifiedAuthSheet.show(
+                  context,
+                  intent: AuthIntent.attendeeRegister,
+                  defaultRole: UserRole.attendee,
+                );
+                if (!ok) return;
+                await _handleAuthFromLanding();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _kPrimary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 8),
+                textStyle: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w700),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+                minimumSize: Size.zero,
+              ),
+              child: const Text('Sign up'),
             ),
           ),
         ] else ...[
           TextButton(
             onPressed: _goToMyDashboard,
-            child: const Text(
-              'Dashboard',
-              style: TextStyle(
-                  color: Color(0xFF1A1A1A), fontWeight: FontWeight.w600),
-            ),
+            child: const Text('Dashboard',
+                style: TextStyle(
+                    color: _kPrimary, fontWeight: FontWeight.w600)),
           ),
           IconButton(
-            icon: const Icon(Icons.person_outline, color: Color(0xFF1A1A1A)),
+            icon: const Icon(Icons.person_outline, color: _kTextDark),
             onPressed: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const ProfileScreen()),
+              MaterialPageRoute(
+                  builder: (_) => const ProfileScreen()),
             ).then((_) => setState(() {})),
           ),
-          TextButton(
+          IconButton(
+            icon: const Icon(Icons.logout_rounded, color: _kTextDark),
+            tooltip: 'Logout',
             onPressed: () {
               _auth.logout();
               Navigator.pushAndRemoveUntil(
                 context,
-                MaterialPageRoute(builder: (_) => const LandingScreen()),
+                MaterialPageRoute(
+                    builder: (_) => const LandingScreen()),
                 (route) => false,
               );
             },
-            child: const Text(
-              'Logout',
-              style: TextStyle(
-                  color: Color(0xFF1A1A1A), fontWeight: FontWeight.w600),
-            ),
           ),
         ],
       ],
     );
   }
 
-  // ── Events Tab ────────────────────────────────────────────
+  // ── Events Tab ───────────────────────────────────────────────────────────
 
   Widget _eventsTab() {
-    final allEvents = _auth.allEvents;
+    final allEvents      = _auth.allEvents;
     final filteredEvents = _applyFilters(allEvents);
-    final now = DateTime.now();
+    final now            = DateTime.now();
     final upcomingEvents = filteredEvents
         .where((e) => (e['start'] as DateTime?)?.isAfter(now) ?? false)
         .take(5)
@@ -825,6 +1010,7 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     final organizers = _auth.allUsers
         .where((u) => u.role == UserRole.organizer)
         .toList();
+    final recommended = _getRecommendedEvents();
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
@@ -835,16 +1021,55 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
           _welcomeBanner(),
           const SizedBox(height: 20),
 
-          // Stats
+          // Stats row
           _statsRow(allEvents.length),
-          const SizedBox(height: 20),
+          const SizedBox(height: 24),
+
+          // Recommended for you
+          if (recommended.isNotEmpty) ...[
+            _sectionHeader('Recommended for You',
+                Icons.auto_awesome_outlined),
+            const SizedBox(height: 10),
+            SizedBox(
+              height: 220,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: recommended.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 12),
+                itemBuilder: (_, i) =>
+                    _upcomingEventCard(recommended[i]),
+              ),
+            ),
+            const SizedBox(height: 24),
+          ],
 
           // My Schedule
           if (myEvents.isNotEmpty) ...[
             _sectionHeader('My Schedule', Icons.calendar_today_outlined),
             const SizedBox(height: 10),
-            ...myEvents.map((e) => _myScheduleTile(e)),
-            const SizedBox(height: 20),
+            ...myEvents.take(3).map((e) => _myScheduleTile(e)),
+            if (myEvents.length > 3)
+              GestureDetector(
+                onTap: () => _tabCtrl.animateTo(1),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      vertical: 10),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text('View all ${myEvents.length} tickets',
+                          style: const TextStyle(
+                              color: _kPrimary,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13)),
+                      const SizedBox(width: 4),
+                      const Icon(Icons.arrow_forward_ios,
+                          size: 12, color: _kPrimary),
+                    ],
+                  ),
+                ),
+              ),
+            const SizedBox(height: 24),
           ],
 
           // Upcoming Events carousel
@@ -863,10 +1088,10 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
                     _upcomingEventCard(upcomingEvents[i]),
               ),
             ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 24),
 
           // Search + filters
-          _sectionHeader('Browse Events', Icons.search_outlined),
+          _sectionHeader('Browse All Events', Icons.search_outlined),
           const SizedBox(height: 10),
           _searchBar(),
           const SizedBox(height: 8),
@@ -883,7 +1108,6 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
           else
             ...filteredEvents.map((e) => _eventCard(e)),
 
-          // Venue owner promo
           const SizedBox(height: 20),
           _venueOwnerBanner(),
           const SizedBox(height: 8),
@@ -892,41 +1116,49 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     );
   }
 
-  // ── Section header ────────────────────────────────────────
+  // ── Section header ───────────────────────────────────────────────────────
 
   Widget _sectionHeader(String title, IconData icon) {
     return Row(
       children: [
-        Icon(icon, color: const Color(0xFF1A1A1A), size: 17),
+        Icon(icon, color: _kPrimary, size: 17),
         const SizedBox(width: 7),
-        Text(
-          title,
-          style: const TextStyle(
-            color: Color(0xFF1A1A1A),
-            fontSize: 15,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
+        Text(title,
+            style: const TextStyle(
+                color: _kTextDark,
+                fontSize: 15,
+                fontWeight: FontWeight.w700)),
       ],
     );
   }
 
-  // ── Welcome banner ────────────────────────────────────────
+  // ── Welcome banner ───────────────────────────────────────────────────────
 
   Widget _welcomeBanner() {
     final user = _auth.currentUser;
     final greeting = user != null
         ? 'Welcome back, ${user.fullName.split(' ').first}!'
-        : 'Discover events near you';
+        : 'Discover Events Near You';
     final subtitle = user != null
-        ? 'Browse, register, and manage your upcoming events.'
-        : 'Sign in to register for events and build your schedule.';
+        ? 'Browse, register, and manage your event schedule.'
+        : 'Sign in to register for events and build your personal schedule.';
 
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: const Color(0xFF1A1A1A),
-        borderRadius: BorderRadius.circular(18),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF4F46E5), Color(0xFF7C3AED)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: _kPrimary.withOpacity(0.3),
+            blurRadius: 20,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       child: Row(
         children: [
@@ -934,25 +1166,22 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  greeting,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                    height: 1.2,
-                  ),
-                ),
+                Text(greeting,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        height: 1.2)),
                 const SizedBox(height: 6),
-                Text(
-                  subtitle,
-                  style: const TextStyle(
-                      color: Color(0xFFB0B0B0), fontSize: 13, height: 1.4),
-                ),
+                Text(subtitle,
+                    style: TextStyle(
+                        color: Colors.white.withOpacity(0.8),
+                        fontSize: 13,
+                        height: 1.4)),
                 if (!_auth.isLoggedIn) ...[
                   const SizedBox(height: 14),
                   SizedBox(
-                    height: 38,
+                    height: 36,
                     child: ElevatedButton(
                       onPressed: () async {
                         final ok = await UnifiedAuthSheet.show(
@@ -965,15 +1194,28 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.white,
-                        foregroundColor: const Color(0xFF1A1A1A),
+                        foregroundColor: _kPrimary,
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10)),
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 16),
                         textStyle: const TextStyle(
-                            fontSize: 13, fontWeight: FontWeight.w700),
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700),
                       ),
-                      child: const Text('Get Started'),
+                      child: const Text('Get Started Free'),
                     ),
+                  ),
+                ] else ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      _heroBadge(
+                          '${_registeredIds.length}', 'Registered'),
+                      const SizedBox(width: 10),
+                      _heroBadge(
+                          '${_wish.countFor(_userId)}', 'Saved'),
+                    ],
                   ),
                 ],
               ],
@@ -981,21 +1223,36 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
           ),
           const SizedBox(width: 16),
           Container(
-            width: 56,
-            height: 56,
+            width: 60, height: 60,
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.12),
+              color: Colors.white.withOpacity(0.15),
               borderRadius: BorderRadius.circular(16),
             ),
             child: const Icon(Icons.event_outlined,
-                color: Colors.white, size: 28),
+                color: Colors.white, size: 30),
           ),
         ],
       ),
     );
   }
 
-  // ── Stats row ─────────────────────────────────────────────
+  Widget _heroBadge(String value, String label) {
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text('$value $label',
+          style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.w700)),
+    );
+  }
+
+  // ── Stats row ────────────────────────────────────────────────────────────
 
   Widget _statsRow(int totalEvents) {
     final upcomingCount = _auth.allEvents.where((e) {
@@ -1009,23 +1266,29 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
       children: [
         Expanded(
           child: _statCard(
-              label: 'Available',
-              value: '$totalEvents',
-              icon: Icons.event_available_outlined),
+            label: 'Available',
+            value: '$totalEvents',
+            icon: Icons.event_available_outlined,
+            color: _kPrimary,
+          ),
         ),
         const SizedBox(width: 10),
         Expanded(
           child: _statCard(
-              label: 'Registered',
-              value: '${_registeredIds.length}',
-              icon: Icons.confirmation_num_outlined),
+            label: 'Registered',
+            value: '${_registeredIds.length}',
+            icon: Icons.confirmation_num_outlined,
+            color: _kSuccess,
+          ),
         ),
         const SizedBox(width: 10),
         Expanded(
           child: _statCard(
-              label: 'Upcoming',
-              value: '$upcomingCount',
-              icon: Icons.schedule_outlined),
+            label: 'Upcoming',
+            value: '$upcomingCount',
+            icon: Icons.schedule_outlined,
+            color: _kWarning,
+          ),
         ),
       ],
     );
@@ -1035,259 +1298,258 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     required String label,
     required String value,
     required IconData icon,
+    required Color color,
   }) {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFFFFF),
+        color: _kSurface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE8E8E8)),
+        border: Border.all(color: color.withOpacity(0.2)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: const Color(0xFF2D2D2D), size: 18),
+          Icon(icon, color: color, size: 18),
           const SizedBox(height: 8),
           Text(value,
-              style: const TextStyle(
-                  color: Color(0xFF1A1A1A),
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800)),
+              style: TextStyle(
+                  color: color, fontSize: 22, fontWeight: FontWeight.w800)),
           Text(label,
-              style: const TextStyle(
-                  color: Color(0xFF6B6B6B), fontSize: 11)),
+              style:
+                  const TextStyle(color: _kTextLight, fontSize: 11)),
         ],
       ),
     );
   }
 
-  // ── My Schedule tile ──────────────────────────────────────
+  // ── My Schedule tile ─────────────────────────────────────────────────────
 
   Widget _myScheduleTile(Map<String, dynamic> e) {
-    final start = e['start'] as DateTime?;
-    final end = e['end'] as DateTime?;
+    final start    = e['start']    as DateTime?;
+    final end      = e['end']      as DateTime?;
     final location = _locationLabel(e);
     final category = (e['category'] as String? ?? '');
     final catColor = _categoryColor(category);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFFFFF),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE8E8E8)),
-      ),
-      child: Row(
-        children: [
-          if (start != null)
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text('${start.day}',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w800)),
-                  Text(_formatDate(start).split(' ')[1],
-                      style: const TextStyle(
-                          color: Color(0xFFB0B0B0), fontSize: 10)),
-                ],
-              ),
-            )
-          else
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child:
-                  const Icon(Icons.event, color: Colors.white, size: 20),
-            ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(e['title'] as String? ?? '',
-                    style: const TextStyle(
-                        color: Color(0xFF1A1A1A),
-                        fontWeight: FontWeight.w600,
-                        fontSize: 13)),
-                if (start != null)
-                  Text(
-                    '${_formatTime(start)}${end != null ? ' – ${_formatTime(end)}' : ''}',
-                    style: const TextStyle(
-                        color: Color(0xFF6B6B6B), fontSize: 12),
-                  ),
-                if (location.isNotEmpty)
-                  Text(location,
-                      style: const TextStyle(
-                          color: Color(0xFF6B6B6B), fontSize: 12),
-                      overflow: TextOverflow.ellipsis),
-              ],
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: catColor.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              category.isEmpty ? 'Event' : category,
-              style: TextStyle(
-                  color: catColor,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ── Upcoming event card (horizontal) ──────────────────────
-
-  Widget _upcomingEventCard(Map<String, dynamic> e) {
-    final category = (e['category'] as String? ?? '');
-    final catColor = _categoryColor(category);
-    final start = e['start'] as DateTime?;
-    final end = e['end'] as DateTime?;
-    final location = _locationLabel(e);
-    final organizer = _organizerName(e);
-    final registered = _registeredIds.contains(e['id'] as String);
 
     return GestureDetector(
       onTap: () => _showEventDetail(e),
       child: Container(
-        width: 236,
-        padding: const EdgeInsets.all(16),
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: const Color(0xFFFFFFFF),
+          color: _kSurface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _kBorder),
+        ),
+        child: Row(
+          children: [
+            // Date badge
+            Container(
+              width: 44, height: 44,
+              decoration: BoxDecoration(
+                color: catColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: catColor.withOpacity(0.3)),
+              ),
+              child: start != null
+                  ? Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text('${start.day}',
+                            style: TextStyle(
+                                color: catColor,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800)),
+                        Text(_formatDate(start).split(' ')[1],
+                            style: TextStyle(
+                                color: catColor.withOpacity(0.7),
+                                fontSize: 10)),
+                      ],
+                    )
+                  : Icon(Icons.event, color: catColor, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(e['title'] as String? ?? '',
+                      style: const TextStyle(
+                          color: _kTextDark,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13)),
+                  if (start != null)
+                    Text(
+                      '${_formatTime(start)}${end != null ? ' – ${_formatTime(end)}' : ''}',
+                      style: const TextStyle(
+                          color: _kTextMid, fontSize: 12),
+                    ),
+                  if (location.isNotEmpty)
+                    Text(location,
+                        style: const TextStyle(
+                            color: _kTextLight, fontSize: 12),
+                        overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: catColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                category.isEmpty ? 'Event' : category,
+                style: TextStyle(
+                    color: catColor,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Upcoming event card (horizontal) ─────────────────────────────────────
+
+  Widget _upcomingEventCard(Map<String, dynamic> e) {
+    final category  = (e['category'] as String? ?? '');
+    final catColor  = _categoryColor(category);
+    final start     = e['start'] as DateTime?;
+    final end       = e['end']   as DateTime?;
+    final location  = _locationLabel(e);
+    final organizer = _organizerName(e);
+    final registered = _registeredIds.contains(e['id'] as String);
+    final isSaved = _auth.isLoggedIn &&
+        _wish.isSaved(_userId, e['id'] as String? ?? '');
+
+    return GestureDetector(
+      onTap: () => _showEventDetail(e),
+      child: Container(
+        width: 240,
+        decoration: BoxDecoration(
+          color: _kSurface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: registered
-                ? const Color(0xFF1A1A1A)
-                : const Color(0xFFE8E8E8),
+            color: registered ? _kSuccess : _kBorder,
             width: registered ? 1.5 : 1,
           ),
-          boxShadow: const [
+          boxShadow: [
             BoxShadow(
-                color: Color(0x0A000000),
-                blurRadius: 14,
-                offset: Offset(0, 4))
+              color: catColor.withOpacity(0.08),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
           ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: catColor.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
+            // Header strip
+            Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: catColor.withOpacity(0.1),
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(15)),
+                border: Border(
+                    bottom: BorderSide(
+                        color: catColor.withOpacity(0.2))),
+              ),
+              child: Row(
+                children: [
+                  Text(
                     category.isEmpty ? 'Event' : category,
                     style: TextStyle(
                         color: catColor,
                         fontSize: 10,
                         fontWeight: FontWeight.w700),
                   ),
-                ),
-                const Spacer(),
-                if (registered)
-                  const Icon(Icons.check_circle,
-                      color: Color(0xFF1A1A1A), size: 15),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Text(
-              e['title'] as String? ?? '',
-              style: const TextStyle(
-                  color: Color(0xFF1A1A1A),
-                  fontWeight: FontWeight.w700,
-                  fontSize: 14,
-                  height: 1.3),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 6),
-            if (start != null)
-              Row(children: [
-                const Icon(Icons.schedule_outlined,
-                    color: Color(0xFF6B6B6B), size: 11),
-                const SizedBox(width: 3),
-                Expanded(
-                  child: Text(
-                    '${_formatDate(start)}${end != null ? ', ${_formatTime(start)}–${_formatTime(end)}' : ''}',
-                    style: const TextStyle(
-                        color: Color(0xFF6B6B6B), fontSize: 11),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ]),
-            if (location.isNotEmpty)
-              Row(children: [
-                const Icon(Icons.location_on_outlined,
-                    color: Color(0xFF6B6B6B), size: 11),
-                const SizedBox(width: 3),
-                Expanded(
-                  child: Text(location,
-                      style: const TextStyle(
-                          color: Color(0xFF6B6B6B), fontSize: 11),
-                      overflow: TextOverflow.ellipsis),
-                ),
-              ]),
-            const Spacer(),
-            Row(
-              children: [
-                if (organizer.isNotEmpty)
-                  Expanded(
-                    child: Text(
-                      'By $organizer',
-                      style: const TextStyle(
-                          color: Color(0xFF9E9E9E), fontSize: 10),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                GestureDetector(
-                  onTap: () => _toggleRegistration(e),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: registered
-                          ? const Color(0xFFF0F0F0)
-                          : const Color(0xFF1A1A1A),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      registered ? 'Registered' : 'Register',
-                      style: TextStyle(
-                        color: registered
-                            ? const Color(0xFF1A1A1A)
-                            : Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
+                  const Spacer(),
+                  if (registered)
+                    Icon(Icons.check_circle, color: _kSuccess, size: 14)
+                  else if (_auth.isLoggedIn)
+                    GestureDetector(
+                      onTap: () {
+                        _wish.toggle(
+                            _userId, e['id'] as String? ?? '');
+                        setState(() {});
+                      },
+                      child: Icon(
+                        isSaved ? Icons.bookmark : Icons.bookmark_border,
+                        color: isSaved ? _kPrimary : _kTextLight,
+                        size: 14,
                       ),
                     ),
-                  ),
+                ],
+              ),
+            ),
+
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      e['title'] as String? ?? '',
+                      style: const TextStyle(
+                          color: _kTextDark,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                          height: 1.3),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 6),
+                    if (start != null)
+                      _miniChip(Icons.schedule_outlined,
+                          '${_formatDate(start)}, ${_formatTime(start)}${end != null ? '–${_formatTime(end)}' : ''}'),
+                    if (location.isNotEmpty)
+                      _miniChip(Icons.location_on_outlined, location),
+                    const Spacer(),
+                    Row(
+                      children: [
+                        if (organizer.isNotEmpty)
+                          Expanded(
+                            child: Text('By $organizer',
+                                style: const TextStyle(
+                                    color: _kTextLight, fontSize: 10),
+                                overflow: TextOverflow.ellipsis),
+                          ),
+                        GestureDetector(
+                          onTap: () => _toggleRegistration(e),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(
+                              color: registered
+                                  ? _kSuccessLight
+                                  : _kPrimary,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              registered ? 'Going ✓' : 'Register',
+                              style: TextStyle(
+                                color: registered
+                                    ? _kSuccess
+                                    : Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ],
         ),
@@ -1295,131 +1557,200 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     );
   }
 
-  // ── Event list card ───────────────────────────────────────
+  Widget _miniChip(IconData icon, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: Row(
+        children: [
+          Icon(icon, color: _kTextLight, size: 11),
+          const SizedBox(width: 3),
+          Expanded(
+            child: Text(text,
+                style: const TextStyle(
+                    color: _kTextMid, fontSize: 11),
+                overflow: TextOverflow.ellipsis),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Event list card ──────────────────────────────────────────────────────
 
   Widget _eventCard(Map<String, dynamic> e) {
-    final registered = _registeredIds.contains(e['id'] as String);
-    final category = (e['category'] as String? ?? '');
-    final catColor = _categoryColor(category);
-    final start = e['start'] as DateTime?;
-    final end = e['end'] as DateTime?;
-    final location = _locationLabel(e);
-    final organizer = _organizerName(e);
+    final registered  = _registeredIds.contains(e['id'] as String);
+    final category    = (e['category'] as String? ?? '');
+    final catColor    = _categoryColor(category);
+    final start       = e['start']        as DateTime?;
+    final end         = e['end']          as DateTime?;
+    final location    = _locationLabel(e);
+    final organizer   = _organizerName(e);
     final description = (e['description'] as String? ?? '');
-    final capacity = e['expectedAttendees'] as int? ?? 0;
+    final capacity    = e['expectedAttendees'] as int? ?? 0;
+    final eventId     = e['id'] as String? ?? '';
+    final isSaved     = _auth.isLoggedIn && _wish.isSaved(_userId, eventId);
 
     return GestureDetector(
       onTap: () => _showEventDetail(e),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: const Color(0xFFFFFFFF),
+          color: _kSurface,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: registered
-                ? const Color(0xFF1A1A1A)
-                : const Color(0xFFE8E8E8),
+            color: registered ? _kSuccess : _kBorder,
             width: registered ? 1.5 : 1,
           ),
         ),
-        child: Column(
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: catColor.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    category.isEmpty ? 'Event' : category,
-                    style: TextStyle(
-                        color: catColor,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700),
-                  ),
-                ),
-                const Spacer(),
-                if (registered)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1A1A1A),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: const Text('Registered',
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600)),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Text(
-              e['title'] as String? ?? '',
-              style: const TextStyle(
-                  color: Color(0xFF1A1A1A),
-                  fontWeight: FontWeight.w700,
-                  fontSize: 15),
-            ),
-            if (description.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(
-                description,
-                style: const TextStyle(
-                    color: Color(0xFF6B6B6B), fontSize: 12, height: 1.4),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+            // Left accent strip
+            Container(
+              width: 4,
+              decoration: BoxDecoration(
+                color: catColor,
+                borderRadius: const BorderRadius.horizontal(
+                    left: Radius.circular(13)),
               ),
-            ],
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 12,
-              runSpacing: 4,
-              children: [
-                if (start != null)
-                  _metaChip(Icons.schedule_outlined,
-                      '${_formatDate(start)}  ${_formatTime(start)}${end != null ? '–${_formatTime(end)}' : ''}'),
-                if (location.isNotEmpty)
-                  _metaChip(Icons.location_on_outlined, location),
-                if (organizer.isNotEmpty)
-                  _metaChip(Icons.person_outline, organizer),
-                if (capacity > 0)
-                  _metaChip(Icons.people_outline, '$capacity expected'),
-              ],
             ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              height: 40,
-              child: ElevatedButton(
-                onPressed: () => _toggleRegistration(e),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: registered
-                      ? const Color(0xFFF5F5F5)
-                      : const Color(0xFF1A1A1A),
-                  foregroundColor: registered
-                      ? const Color(0xFF1A1A1A)
-                      : Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    side: registered
-                        ? const BorderSide(color: Color(0xFFE0E0E0))
-                        : BorderSide.none,
-                  ),
-                  textStyle: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: catColor.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            category.isEmpty ? 'Event' : category,
+                            style: TextStyle(
+                                color: catColor,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        const Spacer(),
+                        if (registered)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: _kSuccessLight,
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.check_circle,
+                                    color: _kSuccess, size: 10),
+                                SizedBox(width: 3),
+                                Text('Registered',
+                                    style: TextStyle(
+                                        color: _kSuccess,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700)),
+                              ],
+                            ),
+                          ),
+                        const SizedBox(width: 6),
+                        // Save button
+                        if (_auth.isLoggedIn)
+                          GestureDetector(
+                            onTap: () {
+                              _wish.toggle(_userId, eventId);
+                              if (!isSaved) {
+                                _fa.logSaveEvent(
+                                    eventId,
+                                    e['title'] as String? ?? '',
+                                    _userId);
+                              }
+                              setState(() {});
+                            },
+                            child: Icon(
+                              isSaved
+                                  ? Icons.bookmark
+                                  : Icons.bookmark_border,
+                              color: isSaved ? _kPrimary : _kTextLight,
+                              size: 18,
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      e['title'] as String? ?? '',
+                      style: const TextStyle(
+                          color: _kTextDark,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 15),
+                    ),
+                    if (description.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        description,
+                        style: const TextStyle(
+                            color: _kTextMid,
+                            fontSize: 12,
+                            height: 1.4),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 4,
+                      children: [
+                        if (start != null)
+                          _metaChip(Icons.schedule_outlined,
+                              '${_formatDate(start)}  ${_formatTime(start)}${end != null ? '–${_formatTime(end)}' : ''}'),
+                        if (location.isNotEmpty)
+                          _metaChip(Icons.location_on_outlined, location),
+                        if (organizer.isNotEmpty)
+                          _metaChip(Icons.person_outline, organizer),
+                        if (capacity > 0)
+                          _metaChip(
+                              Icons.people_outline, '$capacity expected'),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 40,
+                      child: ElevatedButton(
+                        onPressed: () => _toggleRegistration(e),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              registered ? _kSuccessLight : _kPrimary,
+                          foregroundColor:
+                              registered ? _kSuccess : Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                            side: registered
+                                ? const BorderSide(
+                                    color: _kSuccess, width: 1)
+                                : BorderSide.none,
+                          ),
+                          textStyle: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600),
+                        ),
+                        child: Text(registered
+                            ? '✓ Registered — Tap to unregister'
+                            : 'Register for this event'),
+                      ),
+                    ),
+                  ],
                 ),
-                child: Text(registered
-                    ? 'Unregister'
-                    : 'Register for this event'),
               ),
             ),
           ],
@@ -1432,56 +1763,64 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, color: const Color(0xFF6B6B6B), size: 12),
+        Icon(icon, color: _kTextLight, size: 12),
         const SizedBox(width: 4),
         Text(text,
-            style: const TextStyle(
-                color: Color(0xFF6B6B6B), fontSize: 12)),
+            style:
+                const TextStyle(color: _kTextMid, fontSize: 12)),
       ],
     );
   }
 
-  // ── Search bar ────────────────────────────────────────────
+  // ── Search bar ───────────────────────────────────────────────────────────
 
   Widget _searchBar() {
     return TextField(
       controller: _searchCtrl,
-      style: const TextStyle(color: Color(0xFF1A1A1A)),
+      style: const TextStyle(color: _kTextDark),
+      onSubmitted: (q) {
+        if (q.trim().isNotEmpty) _fa.logSearch(q.trim(), userId: _userId);
+      },
       decoration: InputDecoration(
         hintText: 'Search events by name…',
-        hintStyle: const TextStyle(color: Color(0xFF9E9E9E)),
+        hintStyle: const TextStyle(color: _kTextLight),
         prefixIcon:
-            const Icon(Icons.search, color: Color(0xFF2D2D2D), size: 20),
+            const Icon(Icons.search, color: _kPrimary, size: 20),
         suffixIcon: _searchQuery.isNotEmpty
             ? IconButton(
                 icon: const Icon(Icons.close,
-                    color: Color(0xFF6B6B6B), size: 18),
+                    color: _kTextMid, size: 18),
                 onPressed: _searchCtrl.clear,
               )
             : null,
         filled: true,
-        fillColor: const Color(0xFFFFFFFF),
+        fillColor: _kSurface,
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xFFE8E8E8)),
+          borderSide: const BorderSide(color: _kBorder),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xFFE8E8E8)),
+          borderSide: const BorderSide(color: _kBorder),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide:
-              const BorderSide(color: Color(0xFF2D2D2D), width: 1.5),
+          borderSide: const BorderSide(color: _kPrimary, width: 1.5),
         ),
         contentPadding: const EdgeInsets.symmetric(vertical: 12),
       ),
     );
   }
 
-  // ── Filter row ────────────────────────────────────────────
+  // ── Filter row ───────────────────────────────────────────────────────────
 
-  Widget _filterRow(List<String> categories, List<UserModel> organizers) {
+  Widget _filterRow(
+      List<String> categories, List<UserModel> organizers) {
+    final hasFilter = _selectedCategory != null ||
+        _selectedOrganizerId != null ||
+        _timeFilter != _TimeFilter.all ||
+        _searchQuery.isNotEmpty;
+
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Row(
@@ -1492,9 +1831,7 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
             value: _timeFilter,
             items: _TimeFilter.values
                 .map((f) => DropdownMenuItem(
-                      value: f,
-                      child: Text(_timeFilterLabels[f]!),
-                    ))
+                    value: f, child: Text(_timeFilterLabels[f]!)))
                 .toList(),
             onChanged: (v) => setState(() => _timeFilter = v!),
           ),
@@ -1507,7 +1844,8 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
               const DropdownMenuItem<String?>(
                   value: null, child: Text('All Categories')),
               ...categories.map(
-                (c) => DropdownMenuItem<String?>(value: c, child: Text(c)),
+                (c) => DropdownMenuItem<String?>(
+                    value: c, child: Text(c)),
               ),
             ],
             onChanged: (v) =>
@@ -1518,9 +1856,10 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
             icon: Icons.person_outline,
             label: _selectedOrganizerId != null
                 ? organizers
-                    .where((o) => o.id == _selectedOrganizerId)
-                    .map((o) => o.fullName.split(' ').first)
-                    .firstOrNull ?? 'Organizer'
+                        .where((o) => o.id == _selectedOrganizerId)
+                        .map((o) => o.fullName.split(' ').first)
+                        .firstOrNull ??
+                    'Organizer'
                 : 'Organizer',
             value: _selectedOrganizerId,
             items: [
@@ -1534,34 +1873,33 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
             onChanged: (v) =>
                 setState(() => _selectedOrganizerId = v),
           ),
-          if (_selectedCategory != null ||
-              _selectedOrganizerId != null ||
-              _timeFilter != _TimeFilter.all ||
-              _searchQuery.isNotEmpty) ...[
+          if (hasFilter) ...[
             const SizedBox(width: 8),
             GestureDetector(
               onTap: () {
                 _searchCtrl.clear();
                 setState(() {
-                  _selectedCategory = null;
+                  _selectedCategory    = null;
                   _selectedOrganizerId = null;
-                  _timeFilter = _TimeFilter.all;
+                  _timeFilter          = _TimeFilter.all;
                 });
               },
               child: Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1A1A1A),
+                  color: _kPrimaryLight,
                   borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                      color: _kPrimary.withOpacity(0.3)),
                 ),
                 child: const Row(
                   children: [
-                    Icon(Icons.close, color: Colors.white, size: 13),
+                    Icon(Icons.close, color: _kPrimary, size: 13),
                     SizedBox(width: 4),
                     Text('Clear',
                         style: TextStyle(
-                            color: Colors.white,
+                            color: _kPrimary,
                             fontSize: 12,
                             fontWeight: FontWeight.w600)),
                   ],
@@ -1574,36 +1912,36 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     );
   }
 
-  // ── Venue owner promo ─────────────────────────────────────
+  // ── Venue owner promo ────────────────────────────────────────────────────
 
   Widget _venueOwnerBanner() {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFFF5F5F5),
+        color: _kPrimaryLight,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE8E8E8)),
+        border: Border.all(color: _kPrimary.withOpacity(0.2)),
       ),
       child: Row(
         children: [
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+              children: const [
                 Text('Own a venue?',
                     style: TextStyle(
-                        color: Color(0xFF1A1A1A),
+                        color: _kPrimaryDark,
                         fontWeight: FontWeight.w800,
                         fontSize: 15)),
                 SizedBox(height: 4),
                 Text('List your space and get booked by organizers.',
-                    style: TextStyle(
-                        color: Color(0xFF6B6B6B), fontSize: 12)),
+                    style:
+                        TextStyle(color: _kTextMid, fontSize: 12)),
               ],
             ),
           ),
           const SizedBox(width: 12),
-          OutlinedButton(
+          ElevatedButton(
             onPressed: () async {
               if (!_auth.isLoggedIn) {
                 final ok = await UnifiedAuthSheet.show(
@@ -1613,46 +1951,60 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
                 );
                 if (!ok) return;
               }
-              _goToMyDashboard();
+              if (!_auth.isLoggedIn) return;
+              final u = _auth.currentUser!;
+              if (u.role != UserRole.staff) return;
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const StaffDashboard()),
+                (r) => false,
+              );
             },
-            style: OutlinedButton.styleFrom(
-              foregroundColor: const Color(0xFF1A1A1A),
-              side: const BorderSide(color: Color(0xFF1A1A1A)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _kPrimary,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 10),
+              textStyle: const TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.w700),
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10)),
+              minimumSize: Size.zero,
             ),
-            child: const Text('List Space'),
+            child: const Text('List Venue'),
           ),
         ],
       ),
     );
   }
 
-  // ── Empty state ───────────────────────────────────────────
+  // ── Empty state ──────────────────────────────────────────────────────────
 
-  Widget _emptyState(String msg) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 32),
-        child: Column(
-          children: [
-            const Icon(Icons.event_busy_outlined,
-                color: Color(0xFFCCCCCC), size: 52),
-            const SizedBox(height: 12),
-            Text(
-              msg,
+  Widget _emptyState(String message) {
+    return Container(
+      padding: const EdgeInsets.all(28),
+      decoration: BoxDecoration(
+        color: _kSurface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _kBorder),
+      ),
+      child: Column(
+        children: [
+          const Icon(Icons.search_off_outlined,
+              size: 40, color: _kTextLight),
+          const SizedBox(height: 10),
+          Text(message,
               textAlign: TextAlign.center,
               style: const TextStyle(
-                  color: Color(0xFF9E9E9E), fontSize: 14, height: 1.6),
-            ),
-          ],
-        ),
+                  color: _kTextMid, fontSize: 13)),
+        ],
       ),
     );
   }
 }
 
-// ── Reusable filter dropdown chip ─────────────────────────────────────────────
+// ── Filter Dropdown widget ────────────────────────────────────────────────────
 
 class _FilterDropdown<T> extends StatelessWidget {
   final IconData icon;
@@ -1672,36 +2024,46 @@ class _FilterDropdown<T> extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 36,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFFFFF),
+        color: _kSurface,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFE0E0E0)),
+        border: Border.all(color: _kBorder),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<T>(
           value: value,
-          icon: const Icon(Icons.expand_more,
-              size: 16, color: Color(0xFF6B6B6B)),
-          isDense: true,
-          style: const TextStyle(
-            color: Color(0xFF1A1A1A),
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
-          ),
           items: items,
           onChanged: onChanged,
+          icon: const Icon(Icons.keyboard_arrow_down_rounded,
+              size: 16, color: _kTextMid),
+          style: const TextStyle(
+              color: _kTextDark, fontSize: 12),
+          isDense: true,
           hint: Row(
-            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 14, color: const Color(0xFF6B6B6B)),
-              const SizedBox(width: 4),
+              Icon(icon, size: 13, color: _kPrimary),
+              const SizedBox(width: 5),
               Text(label,
                   style: const TextStyle(
-                      color: Color(0xFF6B6B6B), fontSize: 12)),
+                      color: _kTextDark,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500)),
             ],
           ),
+          selectedItemBuilder: (_) => items.map((item) {
+            return Row(
+              children: [
+                Icon(icon, size: 13, color: _kPrimary),
+                const SizedBox(width: 5),
+                Text(label,
+                    style: const TextStyle(
+                        color: _kTextDark,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500)),
+              ],
+            );
+          }).toList(),
         ),
       ),
     );
