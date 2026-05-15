@@ -7,6 +7,8 @@ import '../../services/notification_service.dart';
 import '../../services/firebase_database_service.dart';
 import '../../services/firebase_analytics_service.dart';
 import '../../services/wishlist_service.dart';
+import '../../services/event_rating_service.dart';
+import '../../services/gamification_service.dart';
 import '../../models/notification_model.dart';
 import '../../models/user_model.dart';
 import '../profile_screen.dart';
@@ -21,6 +23,7 @@ import 'tabs/attendee_notifications_tab.dart';
 import 'tabs/attendee_analytics_tab.dart';
 import 'tabs/attendee_tickets_tab.dart';
 import 'tabs/attendee_wishlist_tab.dart';
+import 'tabs/attendee_history_tab.dart';
 import '../../widgets/ai_chatbot_widget.dart';
 
 // ── Theme constants ───────────────────────────────────────────────────────────
@@ -78,12 +81,14 @@ class AttendeeDashboard extends StatefulWidget {
 
 class _AttendeeDashboardState extends State<AttendeeDashboard>
     with SingleTickerProviderStateMixin {
-  final _auth  = AuthService();
-  final _reg   = RegistrationService();
-  final _notif = NotificationService();
-  final _fdb   = FirebaseDatabaseService();
-  final _fa    = FirebaseAnalyticsService();
-  final _wish  = WishlistService();
+  final _auth         = AuthService();
+  final _reg          = RegistrationService();
+  final _notif        = NotificationService();
+  final _fdb          = FirebaseDatabaseService();
+  final _fa           = FirebaseAnalyticsService();
+  final _wish         = WishlistService();
+  final _rating       = EventRatingService();
+  final _gamification = GamificationService();
 
   StreamSubscription? _eventsSub;
   Map<String, dynamic>? _pendingRegistrationEvent;
@@ -98,7 +103,7 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
   late final TabController _tabCtrl;
 
   static const _tabs = [
-    'Events', 'Tickets', 'Saved', 'Calendar', 'Map', 'Alerts', 'Analytics'
+    'Events', 'Tickets', 'Saved', 'Calendar', 'Map', 'Alerts', 'Analytics', 'History'
   ];
   static const _tabIcons = [
     Icons.event_outlined,
@@ -108,6 +113,7 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     Icons.map_outlined,
     Icons.notifications_outlined,
     Icons.bar_chart_outlined,
+    Icons.history_outlined,
   ];
 
   // ── Getters ──────────────────────────────────────────────────────────────
@@ -259,21 +265,73 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
   }
 
   List<Map<String, dynamic>> _getRecommendedEvents() {
-    if (!_auth.isLoggedIn || _registeredIds.isEmpty) return [];
-    final myCats = _auth.allEvents
-        .where((e) => _registeredIds.contains(e['id'] as String))
-        .map((e) => e['category'] as String? ?? '')
-        .where((c) => c.isNotEmpty)
-        .toSet();
+    if (!_auth.isLoggedIn) return [];
     final now = DateTime.now();
-    return _auth.allEvents
-        .where((e) =>
-            e['status'] == 'published' &&
-            !_registeredIds.contains(e['id'] as String) &&
-            myCats.contains(e['category'] as String? ?? '') &&
-            ((e['start'] as DateTime?)?.isAfter(now) ?? false))
-        .take(5)
+
+    // Build weighted interest profile from registration history
+    final myRegistered = _auth.allEvents
+        .where((e) => _registeredIds.contains(e['id'] as String))
         .toList();
+
+    final catWeights = <String, int>{};
+    final orgWeights = <String, int>{};
+    for (final e in myRegistered) {
+      final cat = e['category'] as String? ?? '';
+      if (cat.isNotEmpty) catWeights[cat] = (catWeights[cat] ?? 0) + 3;
+      final org = e['organizerId'] as String? ?? '';
+      if (org.isNotEmpty) orgWeights[org] = (orgWeights[org] ?? 0) + 2;
+    }
+
+    // Also boost from wishlist
+    if (_auth.isLoggedIn) {
+      for (final eid in _wish.savedFor(_userId)) {
+        final ev = _auth.allEvents.where((e) => e['id'] == eid).toList();
+        if (ev.isNotEmpty) {
+          final cat = ev.first['category'] as String? ?? '';
+          if (cat.isNotEmpty) catWeights[cat] = (catWeights[cat] ?? 0) + 1;
+        }
+      }
+    }
+
+    // Score every unregistered future published event
+    final candidates = _auth.allEvents.where((e) =>
+        e['status'] == 'published' &&
+        !_registeredIds.contains(e['id'] as String) &&
+        ((e['start'] as DateTime?)?.isAfter(now) ?? false));
+
+    final scored = candidates.map((e) {
+      final cat   = e['category']    as String? ?? '';
+      final org   = e['organizerId'] as String? ?? '';
+      final start = e['start']       as DateTime?;
+      double score = 0;
+      score += (catWeights[cat] ?? 0).toDouble();
+      score += (orgWeights[org] ?? 0).toDouble();
+      // Trending events get a small boost
+      final regCount = _reg.countForEvent(e['id'] as String? ?? '');
+      score += regCount * 0.4;
+      // Events within the next 30 days get a recency boost
+      if (start != null) {
+        final days = start.difference(now).inDays;
+        if (days <= 7)  score += 2.5;
+        else if (days <= 30) score += 1.0;
+      }
+      return (event: e, score: score);
+    }).toList()
+      ..sort((a, b) => b.score.compareTo(a.score));
+
+    // Max 2 per category for variety, cap at 6
+    final result   = <Map<String, dynamic>>[];
+    final catCount = <String, int>{};
+    for (final item in scored) {
+      final cat   = item.event['category'] as String? ?? '';
+      final count = catCount[cat] ?? 0;
+      if (count < 2) {
+        result.add(item.event);
+        catCount[cat] = count + 1;
+        if (result.length >= 6) break;
+      }
+    }
+    return result;
   }
 
   // ── Conflict check ───────────────────────────────────────────────────────
@@ -313,7 +371,7 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     _doRegister(event);
   }
 
-  void _doRegister(Map<String, dynamic> event) {
+  Future<void> _doRegister(Map<String, dynamic> event) async {
     final id   = event['id'] as String;
     final user = _auth.currentUser!;
     if (_reg.isRegistered(eventId: id, attendeeId: user.id)) {
@@ -338,7 +396,7 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     _showSnack('Registered for "${event['title']}"!');
     _fa.logEventRegistration(id, event['title'] as String? ?? '', user.id, 'attendee');
 
-    // Notification
+    // Confirmation notification
     final start = event['start'] as DateTime?;
     _notif.addNotification(
       ownerId: user.id,
@@ -347,6 +405,69 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
           '${start != null ? ' on ${_formatDate(start)} at ${_formatTime(start)}' : ''}.',
       type: NotificationType.eventRegistered,
     );
+
+    // ── Gamification ─────────────────────────────────────────────────────
+    final regs        = _reg.registrationsForAttendee(user.id);
+    final regCount    = regs.length;
+    final attended    = regs.where((r) => r['attended'] == true).length;
+    final myEvts      = _auth.allEvents
+        .where((e) => regs.any((r) => r['eventId'] == e['id']))
+        .toList();
+    final catCount    = myEvts
+        .map((e) => e['category'] as String? ?? '')
+        .where((c) => c.isNotEmpty)
+        .toSet()
+        .length;
+    final reviewCount = _rating.getUserRatingCount(user.id);
+    final wishCount   = _wish.countFor(user.id);
+    final isEarlyBird = start != null &&
+        start.difference(DateTime.now()).inDays >= 7;
+
+    final newBadges = await _gamification.checkAndAward(
+      userId:            user.id,
+      registrationCount: regCount,
+      attendedCount:     attended,
+      categoryCount:     catCount,
+      reviewCount:       reviewCount,
+      wishlistCount:     wishCount,
+      isEarlyBird:       isEarlyBird,
+    );
+
+    if (newBadges.isNotEmpty && mounted) {
+      final badge = newBadges.first;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Text(_gamification.badgeEmoji(badge),
+                  style: const TextStyle(fontSize: 20)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('Badge Earned: ${_gamification.badgeName(badge)}',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13)),
+                    Text(_gamification.badgeDescription(badge),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 11)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: Color(_gamification.badgeColorHex(badge)),
+          duration: const Duration(seconds: 4),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    }
   }
 
   void _showConflictDialog(
@@ -356,6 +477,21 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     final timeStr = existingStart != null && existingEnd != null
         ? '${_formatTime(existingStart)} – ${_formatTime(existingEnd)} on ${_formatDate(existingStart)}'
         : '';
+
+    // Find alternatives: same category, future, no conflict, not registered
+    final category = newEvent['category'] as String? ?? '';
+    final now      = DateTime.now();
+    final alternatives = _auth.allEvents.where((e) {
+      if (e['status'] != 'published') return false;
+      if (_registeredIds.contains(e['id'])) return false;
+      if (e['id'] == newEvent['id']) return false;
+      if (e['id'] == existing['id']) return false;
+      if ((e['category'] as String? ?? '') != category) return false;
+      final s = e['start'] as DateTime?;
+      if (s == null || s.isBefore(now)) return false;
+      if (_conflictingEvent(e) != null) return false;
+      return true;
+    }).take(3).toList();
 
     showDialog<void>(
       context: context,
@@ -373,53 +509,128 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
                     fontSize: 16)),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'You already have another event at this time.',
-              style: TextStyle(color: _kTextMid, height: 1.5),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: _kBg,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _kBorder),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'You already have another event at this time:',
+                style: TextStyle(color: _kTextMid, height: 1.5),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(existing['title'] as String? ?? '',
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF7ED),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: _kWarning.withOpacity(0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(existing['title'] as String? ?? '',
+                        style: const TextStyle(
+                            color: _kTextDark,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13)),
+                    if (timeStr.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          const Icon(Icons.schedule_outlined,
+                              size: 13, color: _kTextLight),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(timeStr,
+                                style: const TextStyle(
+                                    color: _kTextMid, fontSize: 12)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (alternatives.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const Icon(Icons.lightbulb_outline,
+                        size: 14, color: _kPrimary),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Similar ${category.isNotEmpty ? category : "events"} you can attend:',
                       style: const TextStyle(
                           color: _kTextDark,
                           fontWeight: FontWeight.w600,
-                          fontSize: 13)),
-                  if (timeStr.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        const Icon(Icons.schedule_outlined,
-                            size: 13, color: _kTextLight),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Text(timeStr,
-                              style: const TextStyle(
-                                  color: _kTextMid, fontSize: 12)),
-                        ),
-                      ],
+                          fontSize: 13),
                     ),
                   ],
-                ],
-              ),
-            ),
-          ],
+                ),
+                const SizedBox(height: 10),
+                ...alternatives.map((alt) {
+                  final altStart = alt['start'] as DateTime?;
+                  return GestureDetector(
+                    onTap: () {
+                      Navigator.pop(context);
+                      _showEventDetail(alt);
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 6),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: _kPrimaryLight,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: _kPrimary.withOpacity(0.2)),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(alt['title'] as String? ?? '',
+                                    style: const TextStyle(
+                                        color: _kTextDark,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 12),
+                                    overflow: TextOverflow.ellipsis),
+                                if (altStart != null)
+                                  Text(
+                                    '${_formatDate(altStart)} · ${_formatTime(altStart)}',
+                                    style: const TextStyle(
+                                        color: _kTextMid, fontSize: 11),
+                                  ),
+                              ],
+                            ),
+                          ),
+                          const Icon(Icons.chevron_right,
+                              size: 16, color: _kPrimary),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ],
+          ),
         ),
         actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close',
+                style: TextStyle(color: _kTextMid)),
+          ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _kPrimary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
             child: const Text('Got it'),
           ),
         ],
@@ -653,6 +864,15 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
                             ),
                           ),
                         ),
+
+                        // ── Rating section (past + registered) ───────────
+                        if (_auth.isLoggedIn &&
+                            isReg &&
+                            start != null &&
+                            start.isBefore(DateTime.now())) ...[
+                          const SizedBox(height: 20),
+                          _buildRatingSection(ctx, setS, eventId, catColor),
+                        ],
                       ],
                     ),
                   ),
@@ -679,6 +899,199 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
           ),
         ],
       ),
+    );
+  }
+
+  // ── Rating section (inside event detail) ─────────────────────────────────
+
+  Widget _buildRatingSection(
+      BuildContext ctx, StateSetter setS, String eventId, Color catColor) {
+    final userRating    = _rating.getUserRating(eventId, _userId);
+    final hasRated      = _rating.hasRated(eventId, _userId);
+    final avgRating     = _rating.getAverageRating(eventId);
+    final ratingCount   = _rating.getRatingCount(eventId);
+    final existingReview = _rating.getUserReview(eventId, _userId);
+    final reviewCtrl    = TextEditingController(text: existingReview);
+    double pickedRating = userRating?.toDouble() ?? 0;
+
+    return StatefulBuilder(
+      builder: (_, setR) {
+        return Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: _kPrimaryLight,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: _kPrimary.withOpacity(0.2)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.star_rounded,
+                      color: _kWarning, size: 18),
+                  const SizedBox(width: 6),
+                  const Text('Rate this event',
+                      style: TextStyle(
+                          color: _kTextDark,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14)),
+                  const Spacer(),
+                  if (avgRating > 0) ...[
+                    Text('${avgRating.toStringAsFixed(1)}',
+                        style: const TextStyle(
+                            color: _kTextDark,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13)),
+                    const Icon(Icons.star_rounded,
+                        color: _kWarning, size: 13),
+                    Text(' ($ratingCount)',
+                        style: const TextStyle(
+                            color: _kTextLight, fontSize: 11)),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // Star picker
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(5, (i) {
+                  final isFilled = i < pickedRating;
+                  return GestureDetector(
+                    onTap: () => setR(() => pickedRating = (i + 1).toDouble()),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Icon(
+                        isFilled
+                            ? Icons.star_rounded
+                            : Icons.star_outline_rounded,
+                        color: isFilled ? _kWarning : _kTextLight,
+                        size: 36,
+                      ),
+                    ),
+                  );
+                }),
+              ),
+              if (pickedRating > 0) ...[
+                const SizedBox(height: 12),
+                Text(
+                  ['', 'Poor', 'Fair', 'Good', 'Great', 'Excellent!']
+                      [pickedRating.toInt()],
+                  style: TextStyle(
+                      color: catColor,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+              const SizedBox(height: 12),
+
+              // Optional review text
+              TextField(
+                controller: reviewCtrl,
+                maxLines: 2,
+                maxLength: 200,
+                decoration: InputDecoration(
+                  hintText: 'Write a short review (optional)…',
+                  hintStyle: const TextStyle(
+                      color: _kTextLight, fontSize: 12),
+                  filled: true,
+                  fillColor: Colors.white,
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 10),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide(
+                        color: _kPrimary.withOpacity(0.2)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide(
+                        color: _kPrimary.withOpacity(0.2)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide:
+                        const BorderSide(color: _kPrimary, width: 1.5),
+                  ),
+                  counterStyle: const TextStyle(
+                      color: _kTextLight, fontSize: 10),
+                ),
+                style: const TextStyle(
+                    color: _kTextDark, fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  icon: Icon(
+                    hasRated
+                        ? Icons.edit_outlined
+                        : Icons.star_outline_rounded,
+                    size: 16),
+                  label: Text(hasRated ? 'Update rating' : 'Submit rating'),
+                  onPressed: pickedRating == 0
+                      ? null
+                      : () async {
+                          final user = _auth.currentUser!;
+                          final sm = ScaffoldMessenger.of(context);
+                          await _rating.submitRating(
+                            eventId:  eventId,
+                            userId:   user.id,
+                            userName: user.fullName,
+                            rating:   pickedRating,
+                            review:   reviewCtrl.text.trim(),
+                          );
+                          // Gamification: check reviewer badge
+                          final reviewCount =
+                              _rating.getUserRatingCount(user.id);
+                          if (reviewCount >= 3) {
+                            await _gamification.checkAndAward(
+                              userId: user.id,
+                              registrationCount: _reg
+                                  .registrationsForAttendee(user.id)
+                                  .length,
+                              attendedCount: 0,
+                              categoryCount: 0,
+                              reviewCount: reviewCount,
+                              wishlistCount: 0,
+                              isEarlyBird: false,
+                            );
+                          }
+                          if (!mounted) return;
+                          setR(() {});
+                          setS(() {});
+                          sm.showSnackBar(
+                            SnackBar(
+                              content: Text(hasRated
+                                  ? 'Rating updated!'
+                                  : 'Thanks for your rating!'),
+                              backgroundColor: _kSuccess,
+                              behavior: SnackBarBehavior.floating,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius:
+                                      BorderRadius.circular(10)),
+                            ),
+                          );
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: pickedRating == 0
+                        ? _kBorder
+                        : catColor,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -857,6 +1270,14 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
                         registeredIds: _registeredIds,
                         userId: _userId,
                       ),
+                    ),
+
+                    // 7 — History
+                    AttendeeHistoryTab(
+                      registeredIds: _registeredIds,
+                      onEventTap: _showEventDetail,
+                      locationLabel: _locationLabel,
+                      organizerName: _organizerName,
                     ),
                   ],
                 ),

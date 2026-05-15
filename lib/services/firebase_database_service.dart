@@ -274,6 +274,70 @@ class FirebaseDatabaseService {
     if (updates.isNotEmpty) await _root.update(updates);
   }
 
+  // ── Ratings ───────────────────────────────────────────────────────────────
+  DatabaseReference get ratingsRef => _root.child('ratings');
+
+  Future<void> writeRating(
+          String eventId, String userId, Map<String, dynamic> data) =>
+      ratingsRef.child(eventId).child(userId).set(_clean(data));
+
+  Stream<List<Map<String, dynamic>>> streamRatingsForEvent(String eventId) =>
+      ratingsRef
+          .child(eventId)
+          .onValue
+          .map((e) => _snapToList(e.snapshot));
+
+  Stream<List<Map<String, dynamic>>> streamAllRatings() =>
+      ratingsRef.onValue.map((event) {
+        if (!event.snapshot.exists || event.snapshot.value == null) return [];
+        final val = event.snapshot.value;
+        if (val is! Map) return [];
+        final result = <Map<String, dynamic>>[];
+        for (final entry in val.entries) {
+          final eventRatings = entry.value;
+          if (eventRatings is Map) {
+            for (final r in eventRatings.values) {
+              if (r is Map) result.add(Map<String, dynamic>.from(r));
+            }
+          }
+        }
+        return result;
+      });
+
+  // ── Badges ────────────────────────────────────────────────────────────────
+  DatabaseReference get badgesRef => _root.child('badges');
+
+  Future<void> writeBadge(
+          String userId, String badgeType, Map<String, dynamic> data) =>
+      badgesRef.child(userId).child(badgeType).set(_clean(data));
+
+  Stream<List<Map<String, dynamic>>> streamBadgesForUser(String userId) =>
+      badgesRef.child(userId).onValue.map((e) => _snapToList(e.snapshot));
+
+  Future<List<Map<String, dynamic>>> getBadgesForUser(String userId) async {
+    final snap = await badgesRef.child(userId).get();
+    return _snapToList(snap);
+  }
+
+  // ── Wishlists (Firebase-synced) ───────────────────────────────────────────
+  DatabaseReference get wishlistsRef => _root.child('wishlists');
+
+  Future<void> writeWishlist(String userId, List<String> eventIds) =>
+      wishlistsRef.child(userId).set({'eventIds': eventIds});
+
+  Stream<List<String>> streamWishlistForUser(String userId) =>
+      wishlistsRef.child(userId).onValue.map((event) {
+        if (!event.snapshot.exists || event.snapshot.value == null) return [];
+        final val = event.snapshot.value;
+        if (val is Map) {
+          final ids = val['eventIds'];
+          if (ids is List) {
+            return ids.map((e) => e.toString()).toList();
+          }
+        }
+        return <String>[];
+      });
+
   // ── Snapshot parser ───────────────────────────────────────────────────────
   List<Map<String, dynamic>> _snapToList(DataSnapshot snap) {
     if (!snap.exists || snap.value == null) return [];

@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../../../services/auth_service.dart';
 import '../../../services/firebase_database_service.dart';
+import '../../../services/registration_service.dart';
+import '../../../services/event_rating_service.dart';
+import '../../../services/gamification_service.dart';
 import '../../../models/user_model.dart';
 
 // ── Theme constants ────────────────────────────────────────────────────────
@@ -58,13 +61,17 @@ class AttendeeAnalyticsTab extends StatefulWidget {
 }
 
 class _AttendeeAnalyticsTabState extends State<AttendeeAnalyticsTab> {
-  final _auth = AuthService();
-  final _fdb  = FirebaseDatabaseService();
+  final _auth         = AuthService();
+  final _fdb          = FirebaseDatabaseService();
+  final _reg          = RegistrationService();
+  final _rating       = EventRatingService();
+  final _gamification = GamificationService();
 
   int? _touchedPieIndex;
   int? _touchedRegPieIndex;
 
   StreamSubscription? _analyticsSub;
+  StreamSubscription? _badgesSub;
   List<Map<String, dynamic>> _fbAnalytics = [];
 
   List<Map<String, dynamic>> get _allPublished => _auth.allEvents
@@ -84,6 +91,7 @@ class _AttendeeAnalyticsTabState extends State<AttendeeAnalyticsTab> {
   void initState() {
     super.initState();
     _subscribeAnalytics();
+    _subscribeBadges();
   }
 
   void _subscribeAnalytics() {
@@ -98,9 +106,19 @@ class _AttendeeAnalyticsTabState extends State<AttendeeAnalyticsTab> {
     });
   }
 
+  void _subscribeBadges() {
+    if (widget.userId.isEmpty) return;
+    _badgesSub = _fdb.streamBadgesForUser(widget.userId).listen((list) {
+      if (!mounted) return;
+      _gamification.loadFromFirebase(widget.userId, list);
+      setState(() {});
+    });
+  }
+
   @override
   void dispose() {
     _analyticsSub?.cancel();
+    _badgesSub?.cancel();
     super.dispose();
   }
 
@@ -128,6 +146,24 @@ class _AttendeeAnalyticsTabState extends State<AttendeeAnalyticsTab> {
         .where((e) => e['eventName'] == 'tab_view')
         .length;
 
+    // Participation stats
+    final regs        = widget.userId.isEmpty
+        ? <Map<String, dynamic>>[]
+        : _reg.registrationsForAttendee(widget.userId);
+    final attended    = regs.where((r) => r['attended'] == true).length;
+    final catBreadth  = my
+        .map((e) => e['category'] as String? ?? '')
+        .where((c) => c.isNotEmpty)
+        .toSet()
+        .length;
+    final reviewCount = _rating.getUserRatingCount(widget.userId);
+    final badges      = _gamification.badgesFor(widget.userId);
+    final points      = _gamification.totalPoints(widget.userId);
+    final level       = _gamification.levelTitle(points);
+    final attRate     = my.isNotEmpty
+        ? (attended / my.length * 100).toStringAsFixed(0)
+        : '0';
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -135,6 +171,14 @@ class _AttendeeAnalyticsTabState extends State<AttendeeAnalyticsTab> {
         // ── Firebase Analytics banner ───────────────────────
         _firebaseBanner(eventViews, registrationEvents, searches),
         const SizedBox(height: 24),
+
+        // ── Gamification / Badges ───────────────────────────
+        if (widget.userId.isNotEmpty) ...[
+          _sectionLabel('My Achievements', Icons.emoji_events_outlined),
+          const SizedBox(height: 12),
+          _badgesSection(badges, points, level),
+          const SizedBox(height: 24),
+        ],
 
         // ── Personal Overview ───────────────────────────────
         _sectionLabel('My Event Overview', Icons.person_outline),
@@ -160,6 +204,32 @@ class _AttendeeAnalyticsTabState extends State<AttendeeAnalyticsTab> {
               value: '$upcoming',
               label: 'Upcoming',
               color: _kWarning,
+            )),
+          ],
+        ),
+        const SizedBox(height: 12),
+        // Participation & engagement row
+        Row(
+          children: [
+            Expanded(child: _statCard(
+              icon: Icons.check_circle_outlined,
+              value: '$attended',
+              label: 'Attended',
+              color: const Color(0xFF059669),
+            )),
+            const SizedBox(width: 10),
+            Expanded(child: _statCard(
+              icon: Icons.trending_up_outlined,
+              value: '$attRate%',
+              label: 'Attend Rate',
+              color: const Color(0xFF0891B2),
+            )),
+            const SizedBox(width: 10),
+            Expanded(child: _statCard(
+              icon: Icons.star_outline_rounded,
+              value: '$reviewCount',
+              label: 'Reviews',
+              color: const Color(0xFFD97706),
             )),
           ],
         ),
@@ -217,6 +287,140 @@ class _AttendeeAnalyticsTabState extends State<AttendeeAnalyticsTab> {
           const SizedBox(height: 8),
         ],
       ],
+    );
+  }
+
+  // ── Badges / Gamification ────────────────────────────────────────────────
+
+  Widget _badgesSection(Set<BadgeType> earned, int points, String level) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF1E1B4B), Color(0xFF3730A3)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: _kPrimary.withOpacity(0.25),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Level header
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('🏆', style: TextStyle(fontSize: 12)),
+                    const SizedBox(width: 5),
+                    Text(level,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              Text('$points pts',
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800)),
+            ],
+          ),
+          const SizedBox(height: 14),
+
+          // Progress bar
+          ClipRRect(
+            borderRadius: BorderRadius.circular(99),
+            child: LinearProgressIndicator(
+              value: (points % 30) / 30,
+              backgroundColor: Colors.white.withOpacity(0.2),
+              valueColor: const AlwaysStoppedAnimation<Color>(
+                  Color(0xFF818CF8)),
+              minHeight: 6,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${earned.length} of ${BadgeType.values.length} badges earned',
+            style: TextStyle(
+                color: Colors.white.withOpacity(0.6), fontSize: 10),
+          ),
+          const SizedBox(height: 16),
+
+          // Badge grid
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: BadgeType.values.map((b) {
+              final isEarned = earned.contains(b);
+              final colorHex = _gamification.badgeColorHex(b);
+              final color    = Color(colorHex);
+              return Tooltip(
+                message: isEarned
+                    ? '${_gamification.badgeName(b)}: ${_gamification.badgeDescription(b)}'
+                    : '${_gamification.badgeName(b)} — ${_gamification.badgeRequirement(b)}',
+                child: Container(
+                  width: 52,
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: isEarned
+                        ? color.withOpacity(0.2)
+                        : Colors.white.withOpacity(0.05),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: isEarned
+                          ? color.withOpacity(0.5)
+                          : Colors.white.withOpacity(0.1),
+                      width: isEarned ? 1.5 : 1,
+                    ),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        _gamification.badgeEmoji(b),
+                        style: TextStyle(
+                            fontSize: 20,
+                            color: isEarned
+                                ? null
+                                : Colors.white.withOpacity(0.25)),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _gamification.badgeName(b).split(' ').first,
+                        style: TextStyle(
+                            color: isEarned
+                                ? Colors.white
+                                : Colors.white.withOpacity(0.35),
+                            fontSize: 7,
+                            fontWeight: FontWeight.w600),
+                        textAlign: TextAlign.center,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
     );
   }
 

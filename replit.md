@@ -88,22 +88,40 @@ Multi-role event and venue management system built with Flutter (web). State is 
 - 4–5 documents per venue owner covering all DocumentType variants
 - 16 attendee registrations across 4 attendees (Laura, Nathan, Chloe, Ravi) for 7 events; some marked attended for past events
 
-### Attendee Module (New)
-- `lib/screens/dashboards/tabs/attendee_tickets_tab.dart` — "My Tickets" tab: ticket-style cards with gradient header, QR placeholder, check-in status, days-until countdown, dashed perforated divider
+### Attendee Module (Enhanced)
+- `lib/screens/dashboards/tabs/attendee_tickets_tab.dart` — Live ticket tab (StatefulWidget with 1s timer): LIVE NOW badge, h:m:s countdown for active events, separate Live/Upcoming/Past sections, star-rating display for past events, stats row, QR placeholder, dashed perforated divider
 - `lib/screens/dashboards/tabs/attendee_wishlist_tab.dart` — "Saved Events" tab: bookmarked events with one-tap register/remove, category accent strip
 - `lib/screens/dashboards/tabs/attendee_notifications_tab.dart` — Alert notifications with indigo theme, unread badge, mark-all-read
-- `lib/screens/dashboards/tabs/attendee_analytics_tab.dart` — Personal analytics: Firebase RTDB live activity log, donut registration rate, category pie + bar charts, organizer leaderboard, 6-month timeline bar chart
-- `lib/services/wishlist_service.dart` — In-memory per-user saved events set (toggle/save/remove/count)
-- `lib/services/firebase_analytics_service.dart` — Firebase Analytics + RTDB dual-write wrapper: logScreenView, logEventRegistration, logEventView, logSearch, logSaveEvent, logShareEvent, logTabView
+- `lib/screens/dashboards/tabs/attendee_analytics_tab.dart` — Personal analytics: Firebase RTDB live activity log, gamification badges showcase with level + XP progress, participation/attendance rate stats, category pie + bar charts, organizer leaderboard, 6-month timeline bar chart
+- `lib/screens/dashboards/tabs/attendee_history_tab.dart` — Full event history timeline grouped as Live Now / Upcoming / Past Years with summary header, status badges, countdown
+- `lib/screens/dashboards/tabs/attendee_map_tab.dart` — OpenStreetMap venues + Nearby Events mode: city picker (London/Manchester/Bristol/Birmingham/Leeds), adjustable radius slider (5–50km), Haversine distance badges on markers and list tiles, user location marker
+- `lib/services/wishlist_service.dart` — In-memory per-user saved events set (toggle/save/remove/count/savedFor)
+- `lib/services/firebase_analytics_service.dart` — Firebase Analytics + RTDB dual-write wrapper
+- `lib/services/event_rating_service.dart` — Firebase-backed 5-star ratings + text reviews: submitRating, getAverageRating, getUserRating, getUserRatingCount, hasRated, getReviewsForEvent
+- `lib/services/gamification_service.dart` — 8 badge types (firstTimer, eventExplorer, enthusiast, superFan, loyalAttendee, reviewer, wishlistKeeper, earlyBird), Firebase persistence, totalPoints, levelTitle, checkAndAward, loadFromFirebase
 
-### Attendee Dashboard — 7 Tabs (Updated)
-0. **Events** — indigo gradient welcome banner, hero stats, Recommendations carousel (based on registered categories), My Schedule (top 3), Upcoming carousel, full search+filter with bookmark save button on each card
-1. **Tickets** — ticket-style cards with category-coloured gradient strip, QR placeholder, check-in badge, days-until countdown
-2. **Saved** — wishlist of bookmarked events, quick register/remove actions
-3. **Calendar** — (existing)
-4. **Map** — (existing)
-5. **Alerts** — notification cards with indigo theme, unread dot indicator
-6. **Analytics** — Firebase live activity log + personal charts
+### Attendee Dashboard — 8 Tabs
+0. **Events** — AI-weighted Recommendations carousel (category/organizer/recency scoring, wishlist boost, max 2 per category), hero stats, My Schedule, search+filter
+1. **Tickets** — Live countdown (seconds), LIVE NOW pulse badge, separate sections, star ratings for past events
+2. **Saved** — Wishlist with quick register/remove
+3. **Calendar** — Monthly calendar view
+4. **Map** — OpenStreetMap + Nearby Events mode with city picker, radius slider, distance badges
+5. **Alerts** — Notification cards with unread dot indicator
+6. **Analytics** — Gamification badges + XP level, participation rate, attendance rate, review count, Firebase charts
+7. **History** — Full attendance timeline grouped by year
+
+### Firebase RTDB Extra Refs (New)
+- `ratings/{eventId}/{userId}` — star ratings and review text
+- `badges/{userId}/{badgeType}` — earned gamification badges with timestamps
+- `wishlists/{userId}` — Firebase-synced wishlist event IDs
+
+### Conflict Dialog (Enhanced)
+- Shows conflicting event with amber highlight
+- Suggests up to 3 alternative events in the same category that have no scheduling conflict
+
+### Event Detail Sheet (Enhanced)
+- Shows 5-star rating picker + text review field for past registered events
+- Submitting a review also triggers gamification badge check (Critic badge at 3+ reviews)
 
 ### Theme (Updated — Professional Indigo)
 - Primary: `Color(0xFF4F46E5)` (Indigo 600)

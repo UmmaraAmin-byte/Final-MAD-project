@@ -1,15 +1,20 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../../services/auth_service.dart';
 import '../../../services/registration_service.dart';
+import '../../../services/event_rating_service.dart';
 
-const _kPrimary = Color(0xFF4F46E5);
+const _kPrimary      = Color(0xFF4F46E5);
 const _kPrimaryLight = Color(0xFFEEF2FF);
-const _kTextDark = Color(0xFF1E1B4B);
-const _kTextMid = Color(0xFF64748B);
-const _kTextLight = Color(0xFF94A3B8);
-const _kBorder = Color(0xFFE2E8F0);
-const _kSuccess = Color(0xFF059669);
+const _kTextDark     = Color(0xFF1E1B4B);
+const _kTextMid      = Color(0xFF64748B);
+const _kTextLight    = Color(0xFF94A3B8);
+const _kBorder       = Color(0xFFE2E8F0);
+const _kSuccess      = Color(0xFF059669);
 const _kSuccessLight = Color(0xFFD1FAE5);
+const _kWarning      = Color(0xFFD97706);
+const _kLive         = Color(0xFF10B981);
+const _kLiveLight    = Color(0xFFD1FAE5);
 
 const _catColors = <String, Color>{
   'Technology':     Color(0xFF4F46E5),
@@ -26,7 +31,23 @@ const _catColors = <String, Color>{
 
 Color _catColor(String c) => _catColors[c] ?? _kPrimary;
 
-class AttendeeTicketsTab extends StatelessWidget {
+// ── Status ─────────────────────────────────────────────────────────────────
+
+enum _TicketStatus { live, upcoming, ended }
+
+_TicketStatus _statusOf(DateTime? start, DateTime? end) {
+  final now = DateTime.now();
+  if (start == null) return _TicketStatus.ended;
+  if (start.isBefore(now) && (end == null || end.isAfter(now))) {
+    return _TicketStatus.live;
+  }
+  if (start.isAfter(now)) return _TicketStatus.upcoming;
+  return _TicketStatus.ended;
+}
+
+// ── Widget ─────────────────────────────────────────────────────────────────
+
+class AttendeeTicketsTab extends StatefulWidget {
   final Set<String> registeredIds;
   final void Function(Map<String, dynamic>) onEventTap;
   final String Function(Map<String, dynamic>) locationLabel;
@@ -41,19 +62,39 @@ class AttendeeTicketsTab extends StatelessWidget {
   });
 
   @override
+  State<AttendeeTicketsTab> createState() => _AttendeeTicketsTabState();
+}
+
+class _AttendeeTicketsTabState extends State<AttendeeTicketsTab> {
+  final _auth   = AuthService();
+  final _reg    = RegistrationService();
+  final _rating = EventRatingService();
+
+  Timer? _ticker;
+  DateTime _now = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    // Tick every second for live countdown
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _now = DateTime.now());
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final auth = AuthService();
-    final reg = RegistrationService();
+    if (!_auth.isLoggedIn) return _notLoggedIn();
 
-    if (!auth.isLoggedIn) {
-      return _notLoggedIn();
-    }
-
-    final userId = auth.currentUser!.id;
-    final now = DateTime.now();
-
-    final myEvents = auth.allEvents
-        .where((e) => registeredIds.contains(e['id'] as String))
+    final userId   = _auth.currentUser!.id;
+    final myEvents = _auth.allEvents
+        .where((e) => widget.registeredIds.contains(e['id'] as String))
         .toList()
       ..sort((a, b) {
         final sa = a['start'] as DateTime?;
@@ -64,16 +105,25 @@ class AttendeeTicketsTab extends StatelessWidget {
         return sa.compareTo(sb);
       });
 
-    final upcoming = myEvents
-        .where((e) => (e['start'] as DateTime?)?.isAfter(now) ?? false)
-        .toList();
-    final past = myEvents
-        .where((e) => !((e['start'] as DateTime?)?.isAfter(now) ?? false))
-        .toList();
+    final live = myEvents.where((e) {
+      final s = e['start'] as DateTime?;
+      final en = e['end'] as DateTime?;
+      return _statusOf(s, en) == _TicketStatus.live;
+    }).toList();
 
-    if (myEvents.isEmpty) {
-      return _emptyState();
-    }
+    final upcoming = myEvents.where((e) {
+      final s = e['start'] as DateTime?;
+      final en = e['end'] as DateTime?;
+      return _statusOf(s, en) == _TicketStatus.upcoming;
+    }).toList();
+
+    final ended = myEvents.where((e) {
+      final s = e['start'] as DateTime?;
+      final en = e['end'] as DateTime?;
+      return _statusOf(s, en) == _TicketStatus.ended;
+    }).toList();
+
+    if (myEvents.isEmpty) return _emptyState();
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
@@ -83,48 +133,77 @@ class AttendeeTicketsTab extends StatelessWidget {
           // Stats row
           Row(
             children: [
-              _statBadge('${myEvents.length}', 'Total Tickets', Icons.confirmation_num_outlined, _kPrimary),
-              const SizedBox(width: 10),
-              _statBadge('${upcoming.length}', 'Upcoming', Icons.upcoming_outlined, _kSuccess),
-              const SizedBox(width: 10),
-              _statBadge('${past.length}', 'Attended', Icons.check_circle_outline, _kTextMid),
+              _statBadge('${myEvents.length}', 'Total',
+                  Icons.confirmation_num_outlined, _kPrimary),
+              const SizedBox(width: 8),
+              _statBadge('${live.length}', 'Live Now',
+                  Icons.fiber_manual_record, _kLive),
+              const SizedBox(width: 8),
+              _statBadge('${upcoming.length}', 'Upcoming',
+                  Icons.upcoming_outlined, _kSuccess),
+              const SizedBox(width: 8),
+              _statBadge('${ended.length}', 'Past',
+                  Icons.history_outlined, _kTextMid),
             ],
           ),
           const SizedBox(height: 24),
 
-          if (upcoming.isNotEmpty) ...[
-            _sectionLabel('Upcoming Events', upcoming.length),
+          if (live.isNotEmpty) ...[
+            _sectionLabel('Live Now', live.length, color: _kLive),
             const SizedBox(height: 12),
-            ...upcoming.map((e) => _ticketCard(e, reg, userId, isUpcoming: true)),
+            ...live.map((e) =>
+                _ticketCard(e, userId, isLive: true)),
             const SizedBox(height: 24),
           ],
 
-          if (past.isNotEmpty) ...[
-            _sectionLabel('Past Events', past.length),
+          if (upcoming.isNotEmpty) ...[
+            _sectionLabel('Upcoming Events', upcoming.length),
             const SizedBox(height: 12),
-            ...past.map((e) => _ticketCard(e, reg, userId, isUpcoming: false)),
+            ...upcoming.map((e) =>
+                _ticketCard(e, userId, isUpcoming: true)),
+            const SizedBox(height: 24),
+          ],
+
+          if (ended.isNotEmpty) ...[
+            _sectionLabel('Past Events', ended.length, muted: true),
+            const SizedBox(height: 12),
+            ...ended.map((e) => _ticketCard(e, userId)),
           ],
         ],
       ),
     );
   }
 
-  Widget _sectionLabel(String title, int count) {
+  // ── Section label ──────────────────────────────────────────────────────
+
+  Widget _sectionLabel(String title, int count,
+      {Color? color, bool muted = false}) {
+    final c = color ?? (muted ? _kTextMid : _kTextDark);
     return Row(
       children: [
+        if (color == _kLive) ...[
+          Container(
+            width: 8, height: 8,
+            decoration:
+                const BoxDecoration(color: _kLive, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
+        ],
         Text(title,
-            style: const TextStyle(
-                color: _kTextDark, fontSize: 15, fontWeight: FontWeight.w700)),
+            style: TextStyle(
+                color: c, fontSize: 15, fontWeight: FontWeight.w700)),
         const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
           decoration: BoxDecoration(
-            color: _kPrimaryLight,
+            color: color != null
+                ? color.withOpacity(0.1)
+                : _kPrimaryLight,
             borderRadius: BorderRadius.circular(20),
           ),
           child: Text('$count',
-              style: const TextStyle(
-                  color: _kPrimary,
+              style: TextStyle(
+                  color: color ?? _kPrimary,
                   fontSize: 11,
                   fontWeight: FontWeight.w700)),
         ),
@@ -136,55 +215,68 @@ class AttendeeTicketsTab extends StatelessWidget {
       String value, String label, IconData icon, Color color) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: _kBorder),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+              color: color == _kLive ? _kLive.withOpacity(0.3) : _kBorder),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(icon, color: color, size: 18),
-            const SizedBox(height: 6),
+            Icon(icon, color: color, size: 16),
+            const SizedBox(height: 4),
             Text(value,
                 style: TextStyle(
                     color: color,
-                    fontSize: 20,
+                    fontSize: 18,
                     fontWeight: FontWeight.w800)),
             Text(label,
-                style: const TextStyle(color: _kTextLight, fontSize: 10)),
+                style:
+                    const TextStyle(color: _kTextLight, fontSize: 9)),
           ],
         ),
       ),
     );
   }
 
-  Widget _ticketCard(Map<String, dynamic> e, RegistrationService reg,
-      String userId, {required bool isUpcoming}) {
+  // ── Ticket card ────────────────────────────────────────────────────────
+
+  Widget _ticketCard(Map<String, dynamic> e, String userId,
+      {bool isUpcoming = false, bool isLive = false}) {
     final category = (e['category'] as String? ?? '');
-    final color = _catColor(category);
-    final start = e['start'] as DateTime?;
-    final end = e['end'] as DateTime?;
-    final loc = locationLabel(e);
-    final org = organizerName(e);
-    final eventId = e['id'] as String? ?? '';
-    final regs = reg.registrationsForAttendee(userId);
+    final color    = _catColor(category);
+    final start    = e['start'] as DateTime?;
+    final end      = e['end']   as DateTime?;
+    final loc      = widget.locationLabel(e);
+    final org      = widget.organizerName(e);
+    final eventId  = e['id'] as String? ?? '';
+    final regs     = _reg.registrationsForAttendee(userId);
     final isAttended = regs.any((r) =>
         r['eventId'] == eventId && (r['attended'] as bool? ?? false));
+    final avgRating   = _rating.getAverageRating(eventId);
+    final userRating  = _rating.getUserRating(eventId, userId);
+    final ratingCount = _rating.getRatingCount(eventId);
+
+    final borderColor = isLive
+        ? _kLive
+        : isUpcoming
+            ? color.withOpacity(0.3)
+            : _kBorder;
 
     return GestureDetector(
-      onTap: () => onEventTap(e),
+      onTap: () => widget.onEventTap(e),
       child: Container(
-        margin: const EdgeInsets.only(bottom: 14),
+        margin: const EdgeInsets.only(bottom: 16),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: _kBorder),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: borderColor, width: isLive ? 2 : 1),
           boxShadow: [
             BoxShadow(
-              color: color.withOpacity(0.08),
-              blurRadius: 16,
+              color: (isLive ? _kLive : color).withOpacity(0.1),
+              blurRadius: isLive ? 20 : 10,
               offset: const Offset(0, 4),
             ),
           ],
@@ -192,17 +284,20 @@ class AttendeeTicketsTab extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Ticket header strip
+            // Header gradient strip
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [color, color.withOpacity(0.7)],
+                  colors: isLive
+                      ? [_kLive, _kLive.withOpacity(0.75)]
+                      : [color, color.withOpacity(0.7)],
                   begin: Alignment.centerLeft,
                   end: Alignment.centerRight,
                 ),
                 borderRadius:
-                    const BorderRadius.vertical(top: Radius.circular(15)),
+                    const BorderRadius.vertical(top: Radius.circular(17)),
               ),
               child: Row(
                 children: [
@@ -222,47 +317,18 @@ class AttendeeTicketsTab extends StatelessWidget {
                     ),
                   ),
                   const Spacer(),
-                  if (isAttended)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: _kSuccessLight,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.check_circle,
-                              color: _kSuccess, size: 12),
-                          SizedBox(width: 4),
-                          Text('Attended',
-                              style: TextStyle(
-                                  color: _kSuccess,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700)),
-                        ],
-                      ),
-                    )
+                  if (isLive)
+                    _liveBadge()
+                  else if (isAttended)
+                    _statusChip('✓ Attended', _kSuccessLight, _kSuccess)
                   else if (isUpcoming)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: const Text('Confirmed',
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w700)),
-                    ),
+                    _statusChip('Confirmed', Colors.white.withOpacity(0.2),
+                        Colors.white),
                 ],
               ),
             ),
 
-            // Ticket body
+            // Body
             Padding(
               padding: const EdgeInsets.all(16),
               child: Row(
@@ -284,36 +350,45 @@ class AttendeeTicketsTab extends StatelessWidget {
                         if (start != null) ...[
                           _infoRow(Icons.calendar_today_outlined,
                               _fmtDate(start)),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 3),
                           _infoRow(Icons.access_time_outlined,
                               '${_fmtTime(start)}${end != null ? ' – ${_fmtTime(end)}' : ''}'),
                         ],
                         if (loc.isNotEmpty) ...[
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 3),
                           _infoRow(Icons.location_on_outlined, loc),
                         ],
                         if (org.isNotEmpty) ...[
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 3),
                           _infoRow(Icons.person_outline, 'By $org'),
+                        ],
+
+                        // Ratings row for past events
+                        if (!isLive && !isUpcoming) ...[
+                          const SizedBox(height: 8),
+                          if (avgRating > 0)
+                            _ratingDisplay(avgRating, ratingCount, userRating),
                         ],
                       ],
                     ),
                   ),
                   const SizedBox(width: 12),
-                  // QR placeholder
+                  // QR code placeholder
                   Container(
-                    width: 60,
-                    height: 60,
+                    width: 62,
+                    height: 62,
                     decoration: BoxDecoration(
-                      color: _kPrimaryLight,
+                      color: (isLive ? _kLive : color).withOpacity(0.08),
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: color.withOpacity(0.2)),
+                      border: Border.all(
+                          color:
+                              (isLive ? _kLive : color).withOpacity(0.2)),
                     ),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Icon(Icons.qr_code_2_rounded,
-                            color: color, size: 32),
+                            color: isLive ? _kLive : color, size: 32),
                       ],
                     ),
                   ),
@@ -337,29 +412,20 @@ class AttendeeTicketsTab extends StatelessWidget {
                       size: 13, color: _kTextLight),
                   const SizedBox(width: 4),
                   Text(
-                    'Ticket #${eventId.substring(0, 8).toUpperCase()}',
+                    'Ticket #${eventId.length >= 8 ? eventId.substring(0, 8).toUpperCase() : eventId.toUpperCase()}',
                     style: const TextStyle(
                         color: _kTextLight,
-                        fontSize: 11,
+                        fontSize: 10,
                         fontFamily: 'monospace'),
                   ),
                   const Spacer(),
-                  if (isUpcoming && start != null)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: color.withOpacity(0.08),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        _daysUntil(start),
-                        style: TextStyle(
-                            color: color,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700),
-                      ),
-                    ),
+                  // Live countdown or days until
+                  if (isLive && end != null)
+                    _liveCountdown(end)
+                  else if (isLive)
+                    _liveNowPill()
+                  else if (isUpcoming && start != null)
+                    _countdownChip(start, color),
                 ],
               ),
             ),
@@ -369,11 +435,197 @@ class AttendeeTicketsTab extends StatelessWidget {
     );
   }
 
+  // ── Live components ────────────────────────────────────────────────────
+
+  Widget _liveBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6, height: 6,
+            decoration: const BoxDecoration(
+                color: _kLive, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 4),
+          const Text('LIVE NOW',
+              style: TextStyle(
+                  color: _kLive,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800)),
+        ],
+      ),
+    );
+  }
+
+  Widget _liveNowPill() {
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: _kLiveLight,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 5, height: 5,
+            decoration: const BoxDecoration(
+                color: _kLive, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 4),
+          const Text('Happening now',
+              style: TextStyle(
+                  color: _kLive,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
+  Widget _liveCountdown(DateTime end) {
+    final diff = end.difference(_now);
+    if (diff.isNegative) return _liveNowPill();
+    final h = diff.inHours.toString().padLeft(2, '0');
+    final m = diff.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = diff.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: _kLiveLight,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 5, height: 5,
+            decoration: const BoxDecoration(
+                color: _kLive, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 4),
+          Text('Ends $h:$m:$s',
+              style: const TextStyle(
+                  color: _kLive,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  fontFamily: 'monospace')),
+        ],
+      ),
+    );
+  }
+
+  Widget _countdownChip(DateTime start, Color color) {
+    final diff = start.difference(_now);
+    String label;
+    if (diff.inSeconds <= 0) {
+      label = 'Starting soon';
+    } else if (diff.inDays == 0) {
+      final h = diff.inHours.toString().padLeft(2, '0');
+      final m = diff.inMinutes.remainder(60).toString().padLeft(2, '0');
+      final s = diff.inSeconds.remainder(60).toString().padLeft(2, '0');
+      label = '$h:$m:$s';
+    } else if (diff.inDays == 1) {
+      label = 'Tomorrow';
+    } else if (diff.inDays < 7) {
+      label = 'In ${diff.inDays}d';
+    } else if (diff.inDays < 30) {
+      label = 'In ${(diff.inDays / 7).round()}w';
+    } else {
+      label = 'In ${(diff.inDays / 30).round()}mo';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.schedule_outlined, size: 10, color: color),
+          const SizedBox(width: 3),
+          Text(label,
+              style: TextStyle(
+                  color: color,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  fontFamily: diff.inDays == 0 ? 'monospace' : null)),
+        ],
+      ),
+    );
+  }
+
+  // ── Rating display ────────────────────────────────────────────────────
+
+  Widget _ratingDisplay(double avg, int count, double? userRating) {
+    return Row(
+      children: [
+        ...List.generate(5, (i) {
+          final isFull = i < avg.floor();
+          final isHalf = !isFull && i < avg;
+          return Icon(
+            isFull
+                ? Icons.star_rounded
+                : isHalf
+                    ? Icons.star_half_rounded
+                    : Icons.star_outline_rounded,
+            size: 13,
+            color: _kWarning,
+          );
+        }),
+        const SizedBox(width: 4),
+        Text('${avg.toStringAsFixed(1)} ($count)',
+            style: const TextStyle(color: _kTextMid, fontSize: 11)),
+        if (userRating != null) ...[
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: _kPrimaryLight,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text('You: ${userRating.toInt()}★',
+                style: const TextStyle(
+                    color: _kPrimary,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ],
+    );
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────
+
+  Widget _statusChip(String label, Color bg, Color fg) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(label,
+          style: TextStyle(
+              color: fg,
+              fontSize: 10,
+              fontWeight: FontWeight.w700)),
+    );
+  }
+
   Widget _infoRow(IconData icon, String text) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, size: 13, color: _kTextMid),
+        Icon(icon, size: 12, color: _kTextLight),
         const SizedBox(width: 5),
         Expanded(
           child: Text(text,
@@ -406,10 +658,8 @@ class AttendeeTicketsTab extends StatelessWidget {
   }
 
   String _fmtDate(DateTime dt) {
-    const m = [
-      'Jan','Feb','Mar','Apr','May','Jun',
-      'Jul','Aug','Sep','Oct','Nov','Dec'
-    ];
+    const m = ['Jan','Feb','Mar','Apr','May','Jun',
+                'Jul','Aug','Sep','Oct','Nov','Dec'];
     const w = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
     return '${w[dt.weekday - 1]}, ${dt.day} ${m[dt.month - 1]} ${dt.year}';
   }
@@ -417,14 +667,7 @@ class AttendeeTicketsTab extends StatelessWidget {
   String _fmtTime(DateTime dt) =>
       '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 
-  String _daysUntil(DateTime start) {
-    final diff = start.difference(DateTime.now());
-    if (diff.inDays == 0) return 'Today!';
-    if (diff.inDays == 1) return 'Tomorrow';
-    if (diff.inDays < 7) return 'In ${diff.inDays} days';
-    if (diff.inDays < 30) return 'In ${(diff.inDays / 7).round()} weeks';
-    return 'In ${(diff.inDays / 30).round()} months';
-  }
+  // ── Empty states ──────────────────────────────────────────────────────
 
   Widget _emptyState() {
     return Center(
@@ -434,9 +677,8 @@ class AttendeeTicketsTab extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
+              width: 80, height: 80,
+              decoration: const BoxDecoration(
                   color: _kPrimaryLight, shape: BoxShape.circle),
               child: const Icon(Icons.confirmation_num_outlined,
                   size: 36, color: _kPrimary),
@@ -449,9 +691,10 @@ class AttendeeTicketsTab extends StatelessWidget {
                     fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
             const Text(
-              'Register for events to see your tickets here. Your confirmed registrations will appear as digital tickets.',
+              'Register for events to see your digital tickets here.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: _kTextMid, fontSize: 13, height: 1.5),
+              style:
+                  TextStyle(color: _kTextMid, fontSize: 13, height: 1.5),
             ),
           ],
         ),
@@ -467,9 +710,8 @@ class AttendeeTicketsTab extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
+              width: 80, height: 80,
+              decoration: const BoxDecoration(
                   color: _kPrimaryLight, shape: BoxShape.circle),
               child: const Icon(Icons.lock_outline,
                   size: 36, color: _kPrimary),
@@ -481,10 +723,11 @@ class AttendeeTicketsTab extends StatelessWidget {
                     fontSize: 18,
                     fontWeight: FontWeight.w700)),
             const SizedBox(height: 8),
-            const Text('Log in to access your registered event tickets.',
-                textAlign: TextAlign.center,
-                style:
-                    TextStyle(color: _kTextMid, fontSize: 13, height: 1.5)),
+            const Text(
+              'Log in to access your registered event tickets.',
+              textAlign: TextAlign.center,
+              style:
+                  TextStyle(color: _kTextMid, fontSize: 13, height: 1.5)),
           ],
         ),
       ),
