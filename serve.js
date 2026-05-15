@@ -22,6 +22,23 @@ const mimeTypes = {
   '.wasm': 'application/wasm',
 };
 
+// Patch flutter_bootstrap.js to use local CanvasKit instead of CDN.
+// This ensures the app renders correctly in Replit's proxied iframe environment.
+function patchBootstrap() {
+  const bootstrapPath = path.join(BUILD_DIR, 'flutter_bootstrap.js');
+  if (!fs.existsSync(bootstrapPath)) return;
+  let content = fs.readFileSync(bootstrapPath, 'utf8');
+  if (content.includes('"useLocalCanvasKit":true')) return; // already patched
+  content = content.replace(
+    /"engineRevision":"([^"]+)","builds"/,
+    '"engineRevision":"$1","useLocalCanvasKit":true,"builds"'
+  );
+  fs.writeFileSync(bootstrapPath, content, 'utf8');
+  console.log('Patched flutter_bootstrap.js to use local CanvasKit.');
+}
+
+patchBootstrap();
+
 const server = http.createServer((req, res) => {
   let urlPath = req.url.split('?')[0];
   let filePath = path.join(BUILD_DIR, urlPath === '/' ? 'index.html' : urlPath);
