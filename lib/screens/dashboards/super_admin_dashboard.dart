@@ -1,8 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:fl_chart/fl_chart.dart';
 import '../../services/auth_service.dart';
+import '../../services/firebase_database_service.dart';
 import '../../models/user_model.dart';
 import '../profile_screen.dart';
 import '../landing_screen.dart';
+import '../../widgets/ai_chatbot_widget.dart';
 
 class SuperAdminDashboard extends StatefulWidget {
   const SuperAdminDashboard({super.key});
@@ -11,14 +15,79 @@ class SuperAdminDashboard extends StatefulWidget {
   State<SuperAdminDashboard> createState() => _SuperAdminDashboardState();
 }
 
-class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
+class _SuperAdminDashboardState extends State<SuperAdminDashboard>
+    with SingleTickerProviderStateMixin {
   final _auth = AuthService();
+  final _fdb = FirebaseDatabaseService();
   bool _redirecting = false;
+  late TabController _tabCtrl;
+
+  StreamSubscription? _usersSub;
+  StreamSubscription? _eventsSub;
+  StreamSubscription? _bookingsSub;
+  StreamSubscription? _analyticsSub;
+
+  List<Map<String, dynamic>> _liveAnalytics = [];
+  int _liveEventCount = 0;
+  int _liveBookingCount = 0;
+
+  static const _tabs = ['Overview', 'Users', 'Analytics', 'Activity'];
 
   @override
   void initState() {
     super.initState();
+    _tabCtrl = TabController(length: _tabs.length, vsync: this);
     _guardAuth();
+    _subscribeFirebase();
+  }
+
+  void _subscribeFirebase() {
+    _usersSub = _fdb.streamUsers().listen((_) {
+      if (mounted) setState(() {});
+    });
+    _eventsSub = _fdb.streamEvents().listen((evts) {
+      if (!mounted) return;
+      _liveEventCount = evts.length;
+      for (final ev in evts) {
+        final exists = _auth.allEvents.any((e) => e['id'] == ev['id']);
+        if (!exists) {
+          final out = Map<String, dynamic>.from(ev);
+          for (final k in ['start', 'end', 'createdAt']) {
+            if (out[k] is int) out[k] = DateTime.fromMillisecondsSinceEpoch(out[k] as int);
+          }
+          _auth.seedEvents([out]);
+        }
+      }
+      if (mounted) setState(() {});
+    });
+    _bookingsSub = _fdb.streamBookings().listen((bks) {
+      if (!mounted) return;
+      _liveBookingCount = bks.length;
+      for (final bk in bks) {
+        final exists = _auth.allBookings.any((b) => b['id'] == bk['id']);
+        if (!exists) {
+          final out = Map<String, dynamic>.from(bk);
+          for (final k in ['start', 'end', 'createdAt']) {
+            if (out[k] is int) out[k] = DateTime.fromMillisecondsSinceEpoch(out[k] as int);
+          }
+          _auth.seedBookings([out]);
+        }
+      }
+      if (mounted) setState(() {});
+    });
+    _analyticsSub = _fdb.streamAnalyticsEvents().listen((events) {
+      if (mounted) setState(() => _liveAnalytics = events);
+    });
+  }
+
+  @override
+  void dispose() {
+    _usersSub?.cancel();
+    _eventsSub?.cancel();
+    _bookingsSub?.cancel();
+    _analyticsSub?.cancel();
+    _tabCtrl.dispose();
+    super.dispose();
   }
 
   void _guardAuth() {
@@ -31,7 +100,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
         Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(builder: (_) => const LandingScreen()),
-          (r) => false,
+          (route) => false,
         );
       });
     }
@@ -39,15 +108,8 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    final user = _auth.currentUser!;
-    final allUsers = _auth.allUsers;
-
-    // Stats
-    final organizers =
-        allUsers.where((u) => u.role == UserRole.organizer).length;
-    final staff = allUsers.where((u) => u.role == UserRole.staff).length;
-    final attendees =
-        allUsers.where((u) => u.role == UserRole.attendee).length;
+    final user = _auth.currentUser;
+    if (user == null) return const SizedBox();
 
     return Scaffold(
       backgroundColor: const Color(0xFFFAFAFA),
@@ -58,21 +120,46 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
           children: [
             Text('👑', style: TextStyle(fontSize: 20)),
             SizedBox(width: 8),
-            Text(
-              'Super Admin',
-              style: TextStyle(
-                color: Color(0xFF1A1A1A),
-                fontWeight: FontWeight.w700,
-                fontSize: 18,
-              ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Super Admin',
+                    style: TextStyle(
+                        color: Color(0xFF1A1A1A),
+                        fontWeight: FontWeight.w700,
+                        fontSize: 17)),
+                Text('Platform Control Centre',
+                    style: TextStyle(color: Color(0xFF6B6B6B), fontSize: 11)),
+              ],
             ),
           ],
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(40),
+          child: Container(
+            decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Color(0xFFE8E8E8)))),
+            child: TabBar(
+              controller: _tabCtrl,
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
+              labelColor: const Color(0xFF1A1A1A),
+              unselectedLabelColor: const Color(0xFF9E9E9E),
+              labelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+              unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 12),
+              indicator: const UnderlineTabIndicator(
+                  borderSide: BorderSide(color: Color(0xFF1A1A1A), width: 2.5)),
+              indicatorSize: TabBarIndicatorSize.label,
+              tabs: _tabs.map((t) => Tab(height: 40, text: t)).toList(),
+            ),
+          ),
         ),
         actions: [
           IconButton(
             icon: const Icon(Icons.person_outline, color: Color(0xFF1A1A1A)),
             onPressed: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const ProfileScreen())).then((_) => setState(() {})),
+                    MaterialPageRoute(builder: (_) => const ProfileScreen()))
+                .then((_) => setState(() {})),
           ),
           IconButton(
             icon: const Icon(Icons.logout_rounded, color: Color(0xFF1A1A1A)),
@@ -88,92 +175,681 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
           ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Welcome
-            Text(
-              'Welcome, ${user.fullName}',
-              style: const TextStyle(
-                  color: Color(0xFF1A1A1A),
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 4),
-            const Text('System overview & user management',
-                style: TextStyle(color: Color(0xFF6B6B6B), fontSize: 14)),
-            const SizedBox(height: 24),
-
-            // ── Stats Grid ────────────────────────
-            GridView.count(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2,
-              crossAxisSpacing: 14,
-              mainAxisSpacing: 14,
-              childAspectRatio: 1.4,
-              children: [
-                _statCard('Total Users', '${allUsers.length}',
-                    Icons.people_outline, const Color(0xFF2D2D2D)),
-                _statCard('Organizers', '$organizers',
-                    Icons.event_outlined, const Color(0xFF6B6B6B)),
-                _statCard('Staff', '$staff',
-                    Icons.support_agent_outlined, const Color(0xFF9E9E9E)),
-                _statCard('Attendees', '$attendees',
-                    Icons.confirmation_num_outlined, const Color(0xFF1A1A1A)),
-              ],
-            ),
-            const SizedBox(height: 28),
-
-            // ── User List ─────────────────────────
-            const Text(
-              'All Registered Users',
-              style: TextStyle(
-                  color: Color(0xFF1A1A1A),
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 14),
-
-            ...allUsers.map((u) => _userTile(u, canDelete: u.id != user.id)),
-          ],
-        ),
+      body: Stack(
+        children: [
+          TabBarView(
+            controller: _tabCtrl,
+            children: [
+              _buildOverviewTab(user),
+              _buildUsersTab(user),
+              _buildAnalyticsTab(),
+              _buildActivityTab(),
+            ],
+          ),
+          const AiChatbotWidget(),
+        ],
       ),
     );
   }
 
-  Widget _statCard(String label, String value, IconData icon, Color color) {
+  // ── Overview Tab ──────────────────────────────────────────────────────────
+
+  Widget _buildOverviewTab(UserModel user) {
+    final allUsers = _auth.allUsers;
+    final organizers = allUsers.where((u) => u.role == UserRole.organizer).length;
+    final staff = allUsers.where((u) => u.role == UserRole.staff).length;
+    final attendees = allUsers.where((u) => u.role == UserRole.attendee).length;
+    final events = _auth.allEvents;
+    final bookings = _auth.allBookings;
+    final publishedEvents = events.where((e) => e['status'] == 'published').length;
+    final activeBookings = bookings.where((b) => b['status'] != 'cancelled').length;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Welcome back, ${user.fullName.split(' ').first}!',
+              style: const TextStyle(
+                  color: Color(0xFF1A1A1A),
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          const Text('Here\'s what\'s happening across EventFlow',
+              style: TextStyle(color: Color(0xFF6B6B6B), fontSize: 14)),
+          const SizedBox(height: 24),
+
+          // ── Live indicator ──────────────────────────────────
+          _liveChip(),
+          const SizedBox(height: 20),
+
+          // ── Primary Stats ───────────────────────────────────
+          const _SectionHeader('Platform Statistics'),
+          const SizedBox(height: 12),
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: 2,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+            childAspectRatio: 1.3,
+            children: [
+              _statCard('Total Users', '${allUsers.length}',
+                  Icons.people_outline, const Color(0xFF1565C0), '+${allUsers.length} registered'),
+              _statCard('Live Events', '$publishedEvents',
+                  Icons.event_outlined, const Color(0xFF2E7D32), '${events.length} total'),
+              _statCard('Active Bookings', '$activeBookings',
+                  Icons.meeting_room_outlined, const Color(0xFF6A1B9A), '${bookings.length} total'),
+              _statCard('AI Interactions', '${_liveAnalytics.length}',
+                  Icons.smart_toy_outlined, const Color(0xFFE65100), 'Tracked events'),
+            ],
+          ),
+          const SizedBox(height: 24),
+
+          // ── Role Breakdown ──────────────────────────────────
+          const _SectionHeader('User Role Breakdown'),
+          const SizedBox(height: 12),
+          _roleBreakdownCard(organizers, staff, attendees, allUsers.length),
+          const SizedBox(height: 24),
+
+          // ── Event Status ────────────────────────────────────
+          const _SectionHeader('Event Status Overview'),
+          const SizedBox(height: 12),
+          _eventStatusCard(events),
+          const SizedBox(height: 24),
+
+          // ── Recent Activity ──────────────────────────────────
+          const _SectionHeader('Recent Platform Activity'),
+          const SizedBox(height: 12),
+          ..._recentActivity().take(5).map((a) => _activityTile(a)),
+        ],
+      ),
+    );
+  }
+
+  Widget _liveChip() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE8F5E9),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF4CAF50).withOpacity(0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: const BoxDecoration(
+                color: Color(0xFF4CAF50), shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
+          const Text('Live — Firebase Realtime Database Connected',
+              style: TextStyle(
+                  color: Color(0xFF2E7D32),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+
+  Widget _statCard(String label, String value, IconData icon, Color color, String sub) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFFFFF),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: color.withOpacity(0.3)),
+        border: Border.all(color: color.withOpacity(0.2)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Icon(icon, color: color, size: 26),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Icon(icon, color: color, size: 22),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(sub,
+                    style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.w600)),
+              ),
+            ],
+          ),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(value,
                   style: TextStyle(
-                      color: color,
-                      fontSize: 26,
-                      fontWeight: FontWeight.w800)),
+                      color: color, fontSize: 28, fontWeight: FontWeight.w800)),
               Text(label,
                   style: const TextStyle(
-                      color: Color(0xFF6B6B6B), fontSize: 12)),
+                      color: Color(0xFF6B6B6B), fontSize: 11)),
             ],
           ),
         ],
       ),
     );
   }
+
+  Widget _roleBreakdownCard(int org, int staff, int att, int total) {
+    final roles = [
+      _RoleBar('Organizers', org, total, const Color(0xFF1565C0), '🎯'),
+      _RoleBar('Venue Owners', staff, total, const Color(0xFF6A1B9A), '🛠️'),
+      _RoleBar('Attendees', att, total, const Color(0xFF2E7D32), '🎟️'),
+    ];
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE8E8E8)),
+      ),
+      child: Column(
+        children: roles.map((r) => Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Row(
+            children: [
+              Text(r.emoji, style: const TextStyle(fontSize: 16)),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 90,
+                child: Text(r.label,
+                    style: const TextStyle(fontSize: 12, color: Color(0xFF1A1A1A))),
+              ),
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: r.total == 0 ? 0 : r.count / r.total,
+                    minHeight: 6,
+                    backgroundColor: const Color(0xFFF0F0F0),
+                    color: r.color,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text('${r.count}',
+                  style: TextStyle(
+                      color: r.color, fontWeight: FontWeight.w700, fontSize: 12)),
+            ],
+          ),
+        )).toList(),
+      ),
+    );
+  }
+
+  Widget _eventStatusCard(List<Map<String, dynamic>> events) {
+    final draft = events.where((e) => e['status'] == 'draft').length;
+    final published = events.where((e) => e['status'] == 'published').length;
+    final now = DateTime.now();
+    final completed = events.where((e) {
+      final end = e['end'];
+      return end is DateTime && end.isBefore(now) && e['status'] == 'published';
+    }).length;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE8E8E8)),
+      ),
+      child: Row(
+        children: [
+          _statusDot('Draft', draft, const Color(0xFFE65100)),
+          const SizedBox(width: 4),
+          _statusDot('Published', published, const Color(0xFF2E7D32)),
+          const SizedBox(width: 4),
+          _statusDot('Completed', completed, const Color(0xFF546E7A)),
+        ].map((w) => Expanded(child: w)).toList(),
+      ),
+    );
+  }
+
+  Widget _statusDot(String label, int count, Color color) {
+    return Column(
+      children: [
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.1),
+            shape: BoxShape.circle,
+          ),
+          child: Center(
+            child: Text('$count',
+                style: TextStyle(
+                    color: color, fontWeight: FontWeight.w800, fontSize: 18)),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(label,
+            style: const TextStyle(color: Color(0xFF6B6B6B), fontSize: 11)),
+      ],
+    );
+  }
+
+  List<Map<String, dynamic>> _recentActivity() {
+    final activities = <Map<String, dynamic>>[];
+    for (final ev in _auth.allEvents.take(3)) {
+      activities.add({
+        'icon': Icons.event_outlined,
+        'color': const Color(0xFF1565C0),
+        'title': 'Event: ${ev['title'] ?? 'Untitled'}',
+        'sub': 'Status: ${ev['status'] ?? 'draft'}',
+        'time': ev['createdAt'] is DateTime
+            ? _fmt(ev['createdAt'] as DateTime)
+            : 'Recently',
+      });
+    }
+    for (final bk in _auth.allBookings.take(2)) {
+      activities.add({
+        'icon': Icons.meeting_room_outlined,
+        'color': const Color(0xFF6A1B9A),
+        'title': 'Booking: ${bk['id']?.toString().substring(0, 8) ?? ''}',
+        'sub': 'Status: ${bk['status'] ?? 'pending'}',
+        'time': bk['createdAt'] is DateTime
+            ? _fmt(bk['createdAt'] as DateTime)
+            : 'Recently',
+      });
+    }
+    return activities;
+  }
+
+  Widget _activityTile(Map<String, dynamic> a) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFE8E8E8)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: (a['color'] as Color).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(a['icon'] as IconData, color: a['color'] as Color, size: 18),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(a['title'] as String,
+                    style: const TextStyle(
+                        color: Color(0xFF1A1A1A),
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13)),
+                Text(a['sub'] as String,
+                    style: const TextStyle(color: Color(0xFF6B6B6B), fontSize: 11)),
+              ],
+            ),
+          ),
+          Text(a['time'] as String,
+              style: const TextStyle(color: Color(0xFF9E9E9E), fontSize: 11)),
+        ],
+      ),
+    );
+  }
+
+  // ── Users Tab ─────────────────────────────────────────────────────────────
+
+  Widget _buildUsersTab(UserModel currentUser) {
+    final allUsers = _auth.allUsers;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const _SectionHeader('All Users'),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2D2D2D),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text('${allUsers.length} total',
+                    style: const TextStyle(color: Colors.white, fontSize: 11)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          ...allUsers.map((u) => _userTile(u, canDelete: u.id != currentUser.id)),
+        ],
+      ),
+    );
+  }
+
+  // ── Analytics Tab ─────────────────────────────────────────────────────────
+
+  Widget _buildAnalyticsTab() {
+    final allUsers = _auth.allUsers;
+    final events = _auth.allEvents;
+    final bookings = _auth.allBookings;
+
+    final byRole = <String, int>{
+      'Organizer': allUsers.where((u) => u.role == UserRole.organizer).length,
+      'Venue Owner': allUsers.where((u) => u.role == UserRole.staff).length,
+      'Attendee': allUsers.where((u) => u.role == UserRole.attendee).length,
+    };
+
+    final bookingStatuses = <String, int>{
+      'Confirmed': bookings.where((b) => b['status'] == 'confirmed').length,
+      'Pending': bookings.where((b) => b['status'] == 'pending').length,
+      'Cancelled': bookings.where((b) => b['status'] == 'cancelled').length,
+    };
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _SectionHeader('Platform Analytics'),
+          const SizedBox(height: 16),
+
+          // User distribution chart
+          _analyticsCard(
+            title: 'User Distribution by Role',
+            child: _barChart(byRole, [
+              const Color(0xFF1565C0),
+              const Color(0xFF6A1B9A),
+              const Color(0xFF2E7D32),
+            ]),
+          ),
+          const SizedBox(height: 16),
+
+          // Booking status chart
+          _analyticsCard(
+            title: 'Booking Status Overview',
+            child: _bookingStatusChart(bookingStatuses),
+          ),
+          const SizedBox(height: 16),
+
+          // Key metrics
+          _analyticsCard(
+            title: 'Platform KPIs',
+            child: Column(
+              children: [
+                _kpiRow('Total Events', events.length.toString()),
+                _kpiRow('Published Events',
+                    events.where((e) => e['status'] == 'published').length.toString()),
+                _kpiRow('Total Bookings', bookings.length.toString()),
+                _kpiRow('Total Users', allUsers.length.toString()),
+                _kpiRow('AI Chatbot Interactions', _liveAnalytics.length.toString()),
+                _kpiRow('Active Since', 'App Launch'),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _analyticsCard({required String title, required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE8E8E8)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title,
+              style: const TextStyle(
+                  color: Color(0xFF1A1A1A),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 14)),
+          const SizedBox(height: 16),
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _barChart(Map<String, int> data, List<Color> colors) {
+    final maxVal = data.values.fold(0, (a, b) => a > b ? a : b).toDouble();
+    final entries = data.entries.toList();
+    return SizedBox(
+      height: 140,
+      child: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: maxVal == 0 ? 10 : maxVal * 1.3,
+          barTouchData: BarTouchData(enabled: true),
+          titlesData: FlTitlesData(
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (v, meta) {
+                  final i = v.toInt();
+                  if (i < entries.length) {
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(entries[i].key,
+                          style: const TextStyle(
+                              fontSize: 9, color: Color(0xFF6B6B6B))),
+                    );
+                  }
+                  return const SizedBox();
+                },
+              ),
+            ),
+            leftTitles: AxisTitles(
+                sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 28,
+                    getTitlesWidget: (v, m) => Text('${v.toInt()}',
+                        style: const TextStyle(
+                            fontSize: 9, color: Color(0xFF9E9E9E))))),
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          ),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            getDrawingHorizontalLine: (_) =>
+                const FlLine(color: Color(0xFFF0F0F0), strokeWidth: 1),
+          ),
+          borderData: FlBorderData(show: false),
+          barGroups: List.generate(
+            entries.length,
+            (i) => BarChartGroupData(
+              x: i,
+              barRods: [
+                BarChartRodData(
+                  toY: entries[i].value.toDouble(),
+                  color: colors[i % colors.length],
+                  width: 28,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _bookingStatusChart(Map<String, int> data) {
+    final colors = [
+      const Color(0xFF2E7D32),
+      const Color(0xFFE65100),
+      const Color(0xFF546E7A),
+    ];
+    final entries = data.entries.toList();
+    final total = data.values.fold(0, (a, b) => a + b);
+    return Row(
+      children: [
+        SizedBox(
+          width: 100,
+          height: 100,
+          child: PieChart(
+            PieChartData(
+              sectionsSpace: 2,
+              centerSpaceRadius: 28,
+              sections: List.generate(
+                entries.length,
+                (i) => PieChartSectionData(
+                  value: entries[i].value.toDouble(),
+                  color: colors[i],
+                  radius: 28,
+                  showTitle: false,
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: List.generate(
+              entries.length,
+              (i) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: BoxDecoration(
+                          color: colors[i], shape: BoxShape.circle),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(entries[i].key,
+                        style: const TextStyle(
+                            fontSize: 12, color: Color(0xFF1A1A1A))),
+                    const Spacer(),
+                    Text(
+                      total == 0
+                          ? '0%'
+                          : '${(entries[i].value / total * 100).round()}%',
+                      style: TextStyle(
+                          color: colors[i],
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _kpiRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label,
+              style: const TextStyle(color: Color(0xFF6B6B6B), fontSize: 13)),
+          Text(value,
+              style: const TextStyle(
+                  color: Color(0xFF1A1A1A),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13)),
+        ],
+      ),
+    );
+  }
+
+  // ── Activity Tab ──────────────────────────────────────────────────────────
+
+  Widget _buildActivityTab() {
+    final activityItems = <Map<String, dynamic>>[];
+
+    for (final ev in _liveAnalytics.reversed.take(20)) {
+      activityItems.add({
+        'icon': Icons.analytics_outlined,
+        'color': const Color(0xFF1565C0),
+        'title': ev['eventName']?.toString() ?? 'Analytics event',
+        'sub': 'User: ${ev['userId']?.toString().substring(0, 6) ?? '?'} · Role: ${ev['userRole'] ?? '?'}',
+        'time': ev['timestamp'] is int
+            ? _fmt(DateTime.fromMillisecondsSinceEpoch(ev['timestamp'] as int))
+            : 'Recently',
+      });
+    }
+
+    for (final ev in _auth.allEvents.take(5)) {
+      activityItems.add({
+        'icon': Icons.event_outlined,
+        'color': const Color(0xFF2E7D32),
+        'title': 'Event created: ${ev['title'] ?? 'Untitled'}',
+        'sub': 'Organizer ID: ${ev['organizerId']?.toString().substring(0, 6) ?? '?'}',
+        'time': ev['createdAt'] is DateTime ? _fmt(ev['createdAt'] as DateTime) : 'Recently',
+      });
+    }
+
+    for (final bk in _auth.allBookings.take(5)) {
+      activityItems.add({
+        'icon': Icons.meeting_room_outlined,
+        'color': const Color(0xFF6A1B9A),
+        'title': 'Booking ${bk['status'] ?? 'created'}',
+        'sub': 'Room: ${bk['roomId']?.toString().substring(0, 6) ?? '?'}',
+        'time': bk['createdAt'] is DateTime ? _fmt(bk['createdAt'] as DateTime) : 'Recently',
+      });
+    }
+
+    return activityItems.isEmpty
+        ? const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.timeline_outlined, size: 48, color: Color(0xFFCCCCCC)),
+                SizedBox(height: 12),
+                Text('No activity recorded yet',
+                    style: TextStyle(color: Color(0xFF9E9E9E))),
+                SizedBox(height: 4),
+                Text('Activity will appear here as users interact with the platform',
+                    style: TextStyle(color: Color(0xFFBBBBBB), fontSize: 12),
+                    textAlign: TextAlign.center),
+              ],
+            ),
+          )
+        : ListView.builder(
+            padding: const EdgeInsets.all(20),
+            itemCount: activityItems.length + 1,
+            itemBuilder: (ctx, i) {
+              if (i == 0) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const _SectionHeader('Platform Activity Log'),
+                      _liveChip(),
+                    ],
+                  ),
+                );
+              }
+              return _activityTile(activityItems[i - 1]);
+            },
+          );
+  }
+
+  // ── User Tile ─────────────────────────────────────────────────────────────
 
   Widget _userTile(UserModel u, {required bool canDelete}) {
     return Container(
@@ -188,11 +864,11 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
         children: [
           CircleAvatar(
             radius: 22,
-            backgroundColor: const Color(0xFFF0F0F0),
+            backgroundColor: _roleColor(u.role).withOpacity(0.12),
             child: Text(
               u.fullName.isNotEmpty ? u.fullName[0].toUpperCase() : '?',
-              style: const TextStyle(
-                  color: Color(0xFF2D2D2D), fontWeight: FontWeight.w700),
+              style: TextStyle(
+                  color: _roleColor(u.role), fontWeight: FontWeight.w700),
             ),
           ),
           const SizedBox(width: 12),
@@ -212,17 +888,14 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
               ],
             ),
           ),
-          // Role badge
           GestureDetector(
             onTap: () => _showRoleChangeDialog(u),
             child: Container(
-              padding:
-              const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: _roleColor(u.role).withOpacity(0.15),
+                color: _roleColor(u.role).withOpacity(0.12),
                 borderRadius: BorderRadius.circular(20),
-                border:
-                Border.all(color: _roleColor(u.role).withOpacity(0.5)),
+                border: Border.all(color: _roleColor(u.role).withOpacity(0.4)),
               ),
               child: Text(
                 '${u.role.emoji} ${u.role.displayName}',
@@ -236,8 +909,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
           if (canDelete) ...[
             const SizedBox(width: 8),
             IconButton(
-              icon: const Icon(Icons.delete_outline,
-                  color: Colors.redAccent, size: 20),
+              icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
               onPressed: () => _confirmDelete(u),
             ),
           ],
@@ -253,8 +925,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
       builder: (_) => StatefulBuilder(
         builder: (ctx, setS) => AlertDialog(
           backgroundColor: const Color(0xFFFFFFFF),
-          shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Text('Change Role: ${u.fullName}',
               style: const TextStyle(color: Color(0xFF1A1A1A), fontSize: 16)),
           content: Column(
@@ -294,8 +965,7 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFFFFFFFF),
-        shape:
-        RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Delete User',
             style: TextStyle(color: Color(0xFF1A1A1A))),
         content: Text(
@@ -320,16 +990,49 @@ class _SuperAdminDashboardState extends State<SuperAdminDashboard> {
     );
   }
 
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
   Color _roleColor(UserRole role) {
     switch (role) {
       case UserRole.superAdmin:
         return const Color(0xFF1A1A1A);
       case UserRole.organizer:
-        return const Color(0xFF2D2D2D);
+        return const Color(0xFF1565C0);
       case UserRole.staff:
-        return const Color(0xFF6B6B6B);
+        return const Color(0xFF6A1B9A);
       case UserRole.attendee:
-        return const Color(0xFF9E9E9E);
+        return const Color(0xFF2E7D32);
     }
   }
+
+  String _fmt(DateTime dt) {
+    const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return '${dt.day} ${m[dt.month - 1]}';
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+class _SectionHeader extends StatelessWidget {
+  final String text;
+  const _SectionHeader(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(text,
+        style: const TextStyle(
+            color: Color(0xFF1A1A1A),
+            fontSize: 15,
+            fontWeight: FontWeight.w700));
+  }
+}
+
+class _RoleBar {
+  final String label;
+  final int count;
+  final int total;
+  final Color color;
+  final String emoji;
+  const _RoleBar(this.label, this.count, this.total, this.color, this.emoji);
 }

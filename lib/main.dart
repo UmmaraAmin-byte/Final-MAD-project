@@ -4,6 +4,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'screens/landing_screen.dart';
 import 'services/seed_service.dart';
+import 'services/firebase_seed_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,8 +15,12 @@ void main() async {
 
   SeedService().seed();
 
+  unawaited(FirebaseSeedService().seedIfNeeded());
+
   runApp(const EventApp());
 }
+
+void unawaited(Future<void> future) {}
 
 class EventApp extends StatelessWidget {
   const EventApp({super.key});

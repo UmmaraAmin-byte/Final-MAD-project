@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/registration_service.dart';
 import '../../services/notification_service.dart';
+import '../../services/firebase_database_service.dart';
 import '../../models/notification_model.dart';
 import '../profile_screen.dart';
 import '../unified_auth_sheet.dart';
@@ -14,6 +16,7 @@ import 'tabs/attendee_calendar_tab.dart';
 import 'tabs/attendee_map_tab.dart';
 import 'tabs/attendee_notifications_tab.dart';
 import 'tabs/attendee_analytics_tab.dart';
+import '../../widgets/ai_chatbot_widget.dart';
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -56,6 +59,8 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
   final _auth = AuthService();
   final _reg = RegistrationService();
   final _notif = NotificationService();
+  final _fdb = FirebaseDatabaseService();
+  StreamSubscription? _eventsSub;
 
   Map<String, dynamic>? _pendingRegistrationEvent;
 
@@ -91,10 +96,29 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     _tabCtrl.addListener(() => setState(() {}));
     _searchCtrl.addListener(() =>
         setState(() => _searchQuery = _searchCtrl.text.trim().toLowerCase()));
+    _subscribeFirebase();
+  }
+
+  void _subscribeFirebase() {
+    _eventsSub = _fdb.streamEvents().listen((fbEvents) {
+      if (!mounted) return;
+      for (final ev in fbEvents) {
+        final exists = _auth.allEvents.any((e) => e['id'] == ev['id']);
+        if (!exists) {
+          final out = Map<String, dynamic>.from(ev);
+          for (final k in ['start', 'end', 'createdAt']) {
+            if (out[k] is int) out[k] = DateTime.fromMillisecondsSinceEpoch(out[k] as int);
+          }
+          _auth.seedEvents([out]);
+        }
+      }
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    _eventsSub?.cancel();
     _tabCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
@@ -562,8 +586,10 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
     return Scaffold(
       backgroundColor: const Color(0xFFFAFAFA),
       appBar: _buildAppBar(),
-      body: Column(
+      body: Stack(
         children: [
+          Column(
+            children: [
           // ── Tab bar ──────────────────────────────────────
           Container(
             color: const Color(0xFFFFFFFF),
@@ -676,6 +702,9 @@ class _AttendeeDashboardState extends State<AttendeeDashboard>
               ],
             ),
           ),
+        ],
+          ),
+          const AiChatbotWidget(),
         ],
       ),
     );

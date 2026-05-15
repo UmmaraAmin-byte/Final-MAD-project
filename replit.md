@@ -1,7 +1,7 @@
 # EventFlow – Flutter App
 
 ## Overview
-Multi-role event and venue management system built with Flutter (web). No external database — all state is in-memory via singleton services.
+Multi-role event and venue management system built with Flutter (web). State is backed by **Firebase Realtime Database (RTDB)** with real-time streams across all dashboards, plus an in-memory singleton layer for fast local access.
 
 ## Running the App
 - Build: `flutter build web --release`
@@ -9,7 +9,7 @@ Multi-role event and venue management system built with Flutter (web). No extern
 - The workflow "Start application" runs `node serve.js` automatically
 
 ## Roles
-- **Super Admin** (`admin@eventflow.com` / `admin123`) — system-wide oversight
+- **Super Admin** (`admin@eventflow.com` / `admin123`) — system-wide oversight, user management, platform analytics
 - **Organizer** — create events, book venues, view attendees, analytics
 - **Venue Owner** (role: `staff`) — manage buildings, rooms, availability, pricing, map locations
 - **Attendee** — browse and register for events
@@ -17,7 +17,7 @@ Multi-role event and venue management system built with Flutter (web). No extern
 ## Architecture
 
 ### Entry Point
-- `lib/main.dart` — MaterialApp with Material 3 theme
+- `lib/main.dart` — MaterialApp with Material 3 theme; initialises Firebase, seeds RTDB on first run
 
 ### Screens
 - `lib/screens/landing_screen.dart` — role selection
@@ -26,7 +26,7 @@ Multi-role event and venue management system built with Flutter (web). No extern
   - `staff_dashboard.dart` — Venue Owner (hierarchical system + map view)
   - `organizer_dashboard.dart` — Organizer
   - `attendee_dashboard.dart` — Attendee
-  - `super_admin_dashboard.dart` — Super Admin
+  - `super_admin_dashboard.dart` — Super Admin (Overview / Users / Analytics / Activity tabs)
 
 ### Venue Owner Module
 - `lib/screens/dashboards/venue/` — all venue owner UI
@@ -40,6 +40,10 @@ Multi-role event and venue management system built with Flutter (web). No extern
   - `sheets/pricing_sheet.dart` — room pricing configuration
   - `sheets/availability_sheet.dart` — working hours, recurring days, blackout dates
 
+### AI Chatbot
+- `lib/widgets/ai_chatbot_widget.dart` — floating FAB overlay present on all 4 dashboards; animated slide-up panel with typing dots and message bubbles
+- `lib/services/chatbot_service.dart` — rule-based assistant; role-aware responses (events, bookings, venues, registration); persists chat history to RTDB
+
 ### Models
 - `lib/models/user_model.dart` — UserModel, UserRole enum
 - `lib/models/building_model.dart` — BuildingModel (includes latitude, longitude)
@@ -48,16 +52,24 @@ Multi-role event and venue management system built with Flutter (web). No extern
 - `lib/models/availability_model.dart` — AvailabilityModel
 
 ### Services
+- `lib/services/firebase_database_service.dart` — **RTDB wrapper**; streams for users, events, buildings, rooms, bookings, registrations, payments, notifications, messages, chatbot sessions, analytics; seed-guard; bulk-write helpers
+- `lib/services/firebase_seed_service.dart` — idempotent RTDB seeder (runs once on first launch via `seedIfNeeded`)
 - `lib/services/auth_service.dart` — singleton, manages users/events/bookings/legacy buildings+rooms
 - `lib/services/venue_service.dart` — singleton, manages typed buildings/rooms/pricing/availability; includes proximity search via Haversine formula
 - `lib/services/map_service.dart` — reverse geocoding (Nominatim/OSM), distance calculation, directions URL builder
-- `lib/services/seed_service.dart` — singleton, seeds rich in-memory data at app startup (called from `main.dart` before `runApp`)
+- `lib/services/seed_service.dart` — singleton, seeds rich in-memory data at app startup
 - `lib/services/booking_management_service.dart` — booking approval/rejection/modification for venue owners
 - `lib/services/chat_service.dart` — per-booking message threads
 - `lib/services/payment_service.dart` — payment records per booking (pending/paid/refunded)
 - `lib/services/notification_service.dart` — venue owner notifications (newBooking, cancellation, reminder, bookingModified)
 - `lib/services/document_service.dart` — venue owner documents (license, permit, certificate)
 - `lib/services/registration_service.dart` — attendee event registrations (register, unregister, isRegistered, markAttended, countForEvent, seedRegistrations)
+
+### Firebase
+- **Project**: `finalmad-d8a9f`
+- **RTDB URL**: `https://finalmad-d8a9f-default-rtdb.asia-southeast1.firebasedatabase.app/`
+- All 4 dashboards subscribe to RTDB streams (`streamEvents`, `streamBookings`, `streamUsers`, `streamAnalyticsEvents`) via `StreamSubscription` with proper `dispose()` cancellation
+- Dates stored as `millisecondsSinceEpoch` ints, converted to `DateTime` on read
 
 ### Seeded Test Accounts (password: `password123`)
 - **Venue Owners**: `margaret@thorntonvenues.co.uk`, `james@hollowayhalls.com`, `priya@nairspaces.com`
@@ -77,6 +89,8 @@ Multi-role event and venue management system built with Flutter (web). No extern
 - 16 attendee registrations across 4 attendees (Laura, Nathan, Chloe, Ravi) for 7 events; some marked attended for past events
 
 ## Key Dependencies
+- `firebase_database: ^11.3.5` — Firebase Realtime Database (RTDB) with real-time streams
+- `fl_chart: ^0.69.0` — bar, pie, and line charts in all dashboards
 - `flutter_map: ^7.0.2` — OpenStreetMap rendering (no API key required)
 - `latlong2: ^0.9.0` — coordinate types for flutter_map
 - `url_launcher: ^6.2.6` — open Google Maps directions in browser

@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../../services/auth_service.dart';
 import '../../services/registration_service.dart';
+import '../../services/firebase_database_service.dart';
 import '../../models/user_model.dart';
 import '../profile_screen.dart';
 import '../landing_screen.dart';
+import '../../widgets/ai_chatbot_widget.dart';
 
 // ── Theme constants ───────────────────────────────────────────────────────────
 
@@ -70,7 +73,10 @@ class _OrganizerDashboardState extends State<OrganizerDashboard>
     with SingleTickerProviderStateMixin {
   final _auth = AuthService();
   final _reg = RegistrationService();
+  final _fdb = FirebaseDatabaseService();
   bool _redirecting = false;
+  StreamSubscription? _eventsSub;
+  StreamSubscription? _bookingsSub;
 
   late final TabController _tabCtrl;
   static const _tabs = ['Events', 'Attendees', 'Venues', 'Analytics'];
@@ -103,6 +109,46 @@ class _OrganizerDashboardState extends State<OrganizerDashboard>
     _tabCtrl = TabController(length: _tabs.length, vsync: this);
     _tabCtrl.addListener(() => setState(() {}));
     _guardAuth();
+    _subscribeFirebase();
+  }
+
+  void _subscribeFirebase() {
+    _eventsSub = _fdb.streamEvents().listen((fbEvents) {
+      if (!mounted) return;
+      for (final ev in fbEvents) {
+        final idx = _auth.allEvents.indexWhere((e) => e['id'] == ev['id']);
+        if (idx == -1) {
+          _auth.seedEvents([_convertFbEvent(ev)]);
+        }
+      }
+      if (mounted) setState(() {});
+    });
+    _bookingsSub = _fdb.streamBookings().listen((fbBookings) {
+      if (!mounted) return;
+      for (final bk in fbBookings) {
+        final idx = _auth.allBookings.indexWhere((b) => b['id'] == bk['id']);
+        if (idx == -1) {
+          _auth.seedBookings([_convertFbBooking(bk)]);
+        }
+      }
+      if (mounted) setState(() {});
+    });
+  }
+
+  Map<String, dynamic> _convertFbEvent(Map<String, dynamic> e) {
+    final out = Map<String, dynamic>.from(e);
+    for (final k in ['start', 'end', 'createdAt']) {
+      if (out[k] is int) out[k] = DateTime.fromMillisecondsSinceEpoch(out[k] as int);
+    }
+    return out;
+  }
+
+  Map<String, dynamic> _convertFbBooking(Map<String, dynamic> b) {
+    final out = Map<String, dynamic>.from(b);
+    for (final k in ['start', 'end', 'createdAt']) {
+      if (out[k] is int) out[k] = DateTime.fromMillisecondsSinceEpoch(out[k] as int);
+    }
+    return out;
   }
 
   void _guardAuth() {
@@ -123,6 +169,8 @@ class _OrganizerDashboardState extends State<OrganizerDashboard>
 
   @override
   void dispose() {
+    _eventsSub?.cancel();
+    _bookingsSub?.cancel();
     _tabCtrl.dispose();
     _titleCtrl.dispose();
     _descCtrl.dispose();
@@ -2113,13 +2161,18 @@ class _OrganizerDashboardState extends State<OrganizerDashboard>
           ),
         ),
       ),
-      body: TabBarView(
-        controller: _tabCtrl,
+      body: Stack(
         children: [
-          _buildEventsTab(events),
-          _buildAttendeesTab(events),
-          _buildVenuesTab(events),
-          _buildAnalyticsTab(events),
+          TabBarView(
+            controller: _tabCtrl,
+            children: [
+              _buildEventsTab(events),
+              _buildAttendeesTab(events),
+              _buildVenuesTab(events),
+              _buildAnalyticsTab(events),
+            ],
+          ),
+          const AiChatbotWidget(),
         ],
       ),
     );

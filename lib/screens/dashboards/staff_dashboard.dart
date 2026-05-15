@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/venue_service.dart';
 import '../../services/analytics_service.dart';
 import '../../services/notification_service.dart';
+import '../../services/firebase_database_service.dart';
 import '../../models/user_model.dart';
 import '../../models/building_model.dart';
 import '../../models/analytics_model.dart';
@@ -18,6 +20,7 @@ import 'venue/widgets/notification_list.dart';
 import 'venue/widgets/document_list.dart';
 import 'venue/sheets/add_building_sheet.dart';
 import 'venue/rooms_screen.dart';
+import '../../widgets/ai_chatbot_widget.dart';
 
 class StaffDashboard extends StatefulWidget {
   const StaffDashboard({super.key});
@@ -30,8 +33,11 @@ class _StaffDashboardState extends State<StaffDashboard>
     with SingleTickerProviderStateMixin {
   final _auth = AuthService();
   final _svc = VenueService();
+  final _fdb = FirebaseDatabaseService();
   bool _redirecting = false;
   late TabController _tabController;
+  StreamSubscription? _bookingsSub;
+  StreamSubscription? _buildingsSub;
 
   static const _tabs = [
     _TabItem(Icons.dashboard_outlined, 'Overview'),
@@ -46,10 +52,33 @@ class _StaffDashboardState extends State<StaffDashboard>
     super.initState();
     _tabController = TabController(length: 5, vsync: this);
     _guardAuth();
+    _subscribeFirebase();
+  }
+
+  void _subscribeFirebase() {
+    _bookingsSub = _fdb.streamBookings().listen((fbBookings) {
+      if (!mounted) return;
+      for (final bk in fbBookings) {
+        final exists = _auth.allBookings.any((b) => b['id'] == bk['id']);
+        if (!exists) {
+          final out = Map<String, dynamic>.from(bk);
+          for (final k in ['start', 'end', 'createdAt']) {
+            if (out[k] is int) out[k] = DateTime.fromMillisecondsSinceEpoch(out[k] as int);
+          }
+          _auth.seedBookings([out]);
+        }
+      }
+      if (mounted) setState(() {});
+    });
+    _buildingsSub = _fdb.streamBuildings().listen((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    _bookingsSub?.cancel();
+    _buildingsSub?.cancel();
     _tabController.dispose();
     super.dispose();
   }
@@ -152,23 +181,28 @@ class _StaffDashboardState extends State<StaffDashboard>
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
       appBar: _buildAppBar(user),
-      body: TabBarView(
-        controller: _tabController,
-        physics: const NeverScrollableScrollPhysics(),
+      body: Stack(
         children: [
-          _OverviewTab(
-            user: user,
-            svc: _svc,
-            auth: _auth,
-            onRefresh: _refresh,
-            onShowAddBuilding: _showAddBuilding,
-            onDeleteBuilding: _deleteBuilding,
-            onViewRooms: _viewRooms,
+          TabBarView(
+            controller: _tabController,
+            physics: const NeverScrollableScrollPhysics(),
+            children: [
+              _OverviewTab(
+                user: user,
+                svc: _svc,
+                auth: _auth,
+                onRefresh: _refresh,
+                onShowAddBuilding: _showAddBuilding,
+                onDeleteBuilding: _deleteBuilding,
+                onViewRooms: _viewRooms,
+              ),
+              _AnalyticsTab(ownerId: user.id),
+              _BookingsTab(ownerId: user.id, ownerName: user.fullName),
+              _CalendarTab(ownerId: user.id),
+              _CommsTab(ownerId: user.id),
+            ],
           ),
-          _AnalyticsTab(ownerId: user.id),
-          _BookingsTab(ownerId: user.id, ownerName: user.fullName),
-          _CalendarTab(ownerId: user.id),
-          _CommsTab(ownerId: user.id),
+          const AiChatbotWidget(),
         ],
       ),
     );
