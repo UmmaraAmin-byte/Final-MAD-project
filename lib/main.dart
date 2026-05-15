@@ -12,7 +12,7 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  await SeedService().seed();
+  SeedService().seed();
 
   runApp(const EventApp());
 }
